@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "849598643135",
+    "project_id": "sales-9e9b8",
+    "storage_bucket": "sales-9e9b8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:849598643135:android:0f4283e70ec86266afff0a",
+        "android_client_info": {
+          "package_name": "com.example.sales"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDwRqEuEo072ucj--mYaATnosCODvr-DO4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:849598643135:android:36a889329f26e48fafff0a",
+        "android_client_info": {
+          "package_name": "com.example.whatsapp_meddages"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDwRqEuEo072ucj--mYaATnosCODvr-DO4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
