@@ -1,6 +1,6 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
-const axios = require("axios"); // لإرسال طلبات الـ API لميتا
+const axios = require("axios");
 
 if (admin.apps.length === 0) {
     admin.initializeApp();
@@ -8,8 +8,8 @@ if (admin.apps.length === 0) {
 
 const db = admin.firestore();
 
-const VERIFY_TOKEN ="Alryyan12345#"; 
-const WHATSAPP_TOKEN ="EAAapSj9k2sABRIVNLKtomho0lxjbXkH9JXm1Asgzosmz0x3nsOAlDdzRauNcJOgYNwUfXzRz5xCetT0SqgKZAeJZAD2h92NaUnrXWDOiFyjdZAaStoF1d36EPgwzAxZC6UmihhYyGZCyx2JdlDIBvpl2JTTvNFdTPYi215N0GiS2XhmoHULg9F6WK6iwd7ZBklXgZDZD"; // Permanent Access Token
+const VERIFY_TOKEN = "Alryyan12345#"; 
+const WHATSAPP_TOKEN = "EAAapSj9k2sABRIVNLKtomho0lxjbXkH9JXm1Asgzosmz0x3nsOAlDdzRauNcJOgYNwUfXzRz5xCetT0SqgKZAeJZAD2h92NaUnrXWDOiFyjdZAaStoF1d36EPgwzAxZC6UmihhYyGZCyx2JdlDIBvpl2JTTvNFdTPYi215N0GiS2XhmoHULg9F6WK6iwd7ZBklXgZDZD"; 
 
 exports.whatsappWebhook = onRequest({ 
     region: "us-central1",
@@ -41,12 +41,46 @@ exports.whatsappWebhook = onRequest({
                 const metadata = value.metadata;
 
                 const senderPhone = message.from; 
-                const phoneNumberId = metadata.phone_number_id; // معرف رقمك الرسمي
-                const messageText = message.text ? message.text.body.trim() : "";
+                const incomingPhoneNumberId = metadata.phone_number_id; 
+                
+                // متغيرات لاستخراج المحتوى ورقم البحث
+                let messageText = "";
+                let resultNumber = "";
 
-                const chatRef = db.collection("chats").doc(senderPhone);
+                // --- استخراج البيانات بناءً على نوع الرسالة ---
+                if (message.type === "text") {
+                    messageText = message.text.body.trim();
+                    // إذا كان النص أرقاماً فقط، نعتبره رقم نتيجة
+                    if (/^\d+$/.test(messageText)) {
+                        resultNumber = messageText;
+                    }
+                } 
+                else if (message.type === "button") {
+                    messageText = message.button.text; // نص الزر ليظهر في سجل المحادثات
+                    try {
+                        // قراءة الـ visitId من الـ payload المرسل في القالب
+                        const payloadData = JSON.parse(message.button.payload);
+                        resultNumber = String(payloadData.visitId);
+                    } catch (e) {
+                        console.error("❌ Error parsing payload:", e);
+                    }
+                }
 
-                // 1️⃣ حفظ رسالة العميل في الفايرستور (كما هي في كودك)
+                // البحث عن إعدادات الواتساب لتحديد المستند الرئيسي
+                const configQuery = await db.collection("whatsapp_config")
+                                            .where("PHONE_NUMBER_ID", "==", incomingPhoneNumberId)
+                                            .limit(1)
+                                            .get();
+
+                if (configQuery.empty) return res.sendStatus(200);
+
+                const configDocId = configQuery.docs[0].id; 
+                const chatRef = db.collection("whatsapp_config")
+                                  .doc(configDocId)
+                                  .collection("chats")
+                                  .doc(senderPhone);
+
+                // حفظ الرسالة المستلمة في Firestore
                 await chatRef.set({
                     'last_message': messageText || "📄 وسائط",
                     'timestamp': admin.firestore.FieldValue.serverTimestamp(),
@@ -60,48 +94,77 @@ exports.whatsappWebhook = onRequest({
                     'timestamp': admin.firestore.FieldValue.serverTimestamp(),
                 });
 
-                // 2️⃣ ذكاء البوت: البحث عن ملف PDF إذا كان النص المرسل عبارة عن رقم (ID)
-                if (messageText !== "") {
-                    const careDoc = await db.collection("one_care").doc(messageText).get();
+                // --- تنفيذ البحث إذا توفر رقم نتيجة (من نص أو زر) ---
+                if (resultNumber !== "") {
+                    let targetCollection = "";
 
-                    if (careDoc.exists) {
-                        const data = careDoc.data();
-                        if (data.result_url) {
-                            const pdfUrl = data.result_url;
+                    if (incomingPhoneNumberId === "1151556284697196") {
+                        targetCollection = "alroomi";
+                    } else if (incomingPhoneNumberId === "1114284988426114") {
+                        targetCollection = "altohami";
+                    }
 
-                            // أ- إرسال الملف للعميل على واتساب
+                    if (targetCollection !== "") {
+                        const careDoc = await db.collection(targetCollection).doc(resultNumber).get();
+
+                        if (careDoc.exists) {
+                            const data = careDoc.data();
+                            if (data.result_url) {
+                                const pdfUrl = data.result_url;
+
+                                await axios.post(
+                                    `https://graph.facebook.com/v25.0/${incomingPhoneNumberId}/messages`,
+                                    {
+                                        "messaging_product": "whatsapp",
+                                        "to": senderPhone,
+                                        "type": "document",
+                                        "document": {
+                                            "link": pdfUrl,
+                                            "filename": `Result_${resultNumber}.pdf`
+                                        }
+                                    },
+                                    { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } }
+                                );
+
+                                const successMsg = `تم إرسال ملف النتائج رقم: ${resultNumber}`;
+                                await chatRef.collection("messages").add({
+                                    'message_body': successMsg,
+                                    'type': 'sent', 
+                                    'timestamp': admin.firestore.FieldValue.serverTimestamp(),
+                                    'is_bot': true 
+                                });
+                                await chatRef.update({ 'last_message': successMsg });
+                            }
+                        } else {
+                            // إرسال رد "لا توجد نتيجة"
+                            const errorMsg = `عذراً، لا توجد نتيجة مسجلة بالرقم: ${resultNumber}`;
+                            
                             await axios.post(
-                                `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+                                `https://graph.facebook.com/v25.0/${incomingPhoneNumberId}/messages`,
                                 {
                                     "messaging_product": "whatsapp",
                                     "to": senderPhone,
-                                    "type": "document",
-                                    "document": {
-                                        "link": pdfUrl,
-                                        "filename": `Result_${messageText}.pdf`
-                                    }
+                                    "type": "text",
+                                    "text": { "body": errorMsg }
                                 },
                                 { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } }
                             );
 
-                            // ب- تسجيل أن البوت أرسل ملف في محادثات التطبيق (ليراها الموظف)
-                            const replyText = `📄 تم إرسال ملف النتائج رقم: ${messageText}`;
                             await chatRef.collection("messages").add({
-                                'message_body': replyText,
-                                'type': 'sent', // ستظهر باللون الأخضر في تطبيقك كأنها رد
+                                'message_body': errorMsg,
+                                'type': 'sent', 
                                 'timestamp': admin.firestore.FieldValue.serverTimestamp(),
-                                'is_bot': true // علامة اختيارية لتعرف أن البوت هو من أرسل
+                                'is_bot': true 
                             });
-
-                            await chatRef.update({ 'last_message': replyText });
+                            await chatRef.update({ 'last_message': errorMsg });
                         }
                     }
                 }
             }
             return res.sendStatus(200);
         } catch (error) {
-            console.error("❌ Error:", error);
-            return res.sendStatus(200); // نرسل 200 دائماً لميتا لتجنب تكرار المحاولة
+            console.error("❌ Error:", error.message);
+            return res.sendStatus(200); 
         }
     }
     res.sendStatus(405);
