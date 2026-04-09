@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:whatsapp_messages/chat_details_screen.dart';
@@ -16,7 +17,6 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
   bool _permissionDenied = false;
   final TextEditingController _searchController = TextEditingController();
 
-  // توحيد اللون هنا ليسهل تغييره لاحقاً
   final Color backgroundColor = Colors.grey[200]!;
 
   @override
@@ -68,7 +68,7 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
     String cleaned = raw.replaceAll(RegExp(r'[\s\-\(\)]'), '');
     if (cleaned.startsWith('+')) cleaned = cleaned.substring(1);
     if (cleaned.startsWith('09') || cleaned.startsWith('01')) {
-      cleaned = '249' + cleaned.substring(1);
+      cleaned = '249${cleaned.substring(1)}';
     }
     return cleaned;
   }
@@ -86,7 +86,6 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
     }
 
     return Scaffold(
-      // تحديد لون خلفية الشاشة (القائمة)
       backgroundColor: backgroundColor,
       appBar: AppBar(
         title: const Text(
@@ -94,7 +93,7 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
           style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
         ),
         centerTitle: true,
-        backgroundColor: backgroundColor, // جعل الـ AppBar بنفس اللون
+        backgroundColor: backgroundColor,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black87),
         bottom: PreferredSize(
@@ -103,7 +102,7 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.white, // لون حقل الكتابة نفسه يظل أبيض للوضوح
+                color: Colors.white,
                 borderRadius: BorderRadius.circular(12),
                 boxShadow: [
                   BoxShadow(
@@ -115,7 +114,6 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
               ),
               child: TextField(
                 controller: _searchController,
-                autofocus: false,
                 decoration: const InputDecoration(
                   hintText: "بحث عن اسم أو رقم...",
                   prefixIcon: Icon(Icons.search, color: Colors.grey),
@@ -132,7 +130,6 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
               ? const Center(child: Text("لا توجد نتائج مطابقة"))
               : ListView.separated(
                 itemCount: _filteredContacts!.length,
-                // تخصيص شكل الفاصل ليتناسب مع الخلفية الرمادية
                 separatorBuilder:
                     (context, index) =>
                         Divider(height: 1, indent: 70, color: Colors.grey[300]),
@@ -149,7 +146,6 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
                           : "بدون رقم";
 
                   return ListTile(
-                    // ListTile يأخذ لون خلفية الـ Scaffold تلقائياً
                     leading: CircleAvatar(
                       backgroundColor: const Color.fromARGB(255, 3, 145, 5),
                       child: Text(
@@ -164,8 +160,20 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                     subtitle: Text(formattedNumber),
-                    onTap: () {
+                    onTap: () async {
                       if (formattedNumber != "بدون رقم") {
+                        await FirebaseFirestore.instance
+                            .collection('whatsapp_config')
+                            .doc(widget.configId)
+                            .collection('chats')
+                            .doc(formattedNumber)
+                            .set({
+                              'display_name': contact.displayName,
+                              'sender_phone': formattedNumber,
+                            }, SetOptions(merge: true));
+
+                        if (!mounted) return;
+
                         Navigator.pushReplacement(
                           context,
                           MaterialPageRoute(
@@ -173,6 +181,7 @@ class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
                                 (context) => ChatDetailScreen(
                                   phoneNumber: formattedNumber,
                                   configId: widget.configId,
+                                  receiverName: contact.displayName,
                                 ),
                           ),
                         );

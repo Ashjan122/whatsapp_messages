@@ -27,7 +27,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadInitialData();
   }
 
-  // دالة مجمعة لتحميل البيانات بالترتيب
   Future<void> _loadInitialData() async {
     await loadSavedSettings();
     await loadConfigs();
@@ -37,12 +36,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final snapshot =
           await FirebaseFirestore.instance.collection('whatsapp_config').get();
-      configs = snapshot.docs
-          .map((doc) => WhatsAppConfig.fromFirestore(doc))
-          .toList();
-      
-      // إذا كان هناك ID محفوظ مسبقاً، نحدث الحقول من السيرفر لضمان دقتها
-      if (selectedConfigId != null && configs.any((c) => c.id == selectedConfigId)) {
+      configs =
+          snapshot.docs
+              .map((doc) => WhatsAppConfig.fromFirestore(doc))
+              .toList();
+
+      if (selectedConfigId != null &&
+          configs.any((c) => c.id == selectedConfigId)) {
         onConfigSelected(selectedConfigId!);
       }
     } catch (e) {
@@ -55,7 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> loadSavedSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedConfigId = prefs.getString('selectedConfigId'); // جلب الدوك ID
+    final savedConfigId = prefs.getString('selectedConfigId');
     final savedToken = prefs.getString('TOKEN');
     final savedPhone = prefs.getString('PHONE_NUMBER_ID');
     final savedWaba = prefs.getString('WABA_ID');
@@ -80,19 +80,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    
-    // حفظ الـ Document ID (مهم جداً للـ sub-collection لاحقاً)
+
     await prefs.setString('selectedConfigId', selectedConfigId ?? '');
-    
-    // حفظ القيم الموجودة في الـ Controllers (المنطق القديم)
+
     await prefs.setString('TOKEN', tokenController.text);
     await prefs.setString('PHONE_NUMBER_ID', phoneController.text);
     await prefs.setString('WABA_ID', wabaController.text);
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("تم حفظ الإعدادات بنجاح")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("تم حفظ الإعدادات بنجاح")));
     }
   }
 
@@ -122,92 +120,100 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       backgroundColor: Colors.grey.shade300,
       body: SafeArea(
-        child: isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      alignment: Alignment.center,
-                      child: const Text(
-                        "الإعدادات",
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    const Align(
-                      alignment: Alignment.centerRight,
-                      child: Text(
-                        "اعدادات الواتساب",
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                          color: Colors.black87,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    DropdownButtonFormField<String>(
-                      value: configs.any((c) => c.id == selectedConfigId) ? selectedConfigId : null,
-                      hint: const Text("اختر الحساب"),
-                      isExpanded: true,
-                      items: configs.map((config) {
-                        return DropdownMenuItem<String>(
-                          value: config.id,
-                          child: Text(config.name),
-                        );
-                      }).toList(),
-                      onChanged: (value) {
-                        if (value != null) onConfigSelected(value);
-                      },
-                      decoration: buildInputDecoration(""),
-                    ),
-                    const SizedBox(height: 20),
-                    TextField(
-                      controller: tokenController,
-                      decoration: buildInputDecoration("TOKEN"),
-                    ),
-                    const SizedBox(height: 15),
-                    TextField(
-                      controller: phoneController,
-                      decoration: buildInputDecoration("PHONE_NUMBER_ID"),
-                    ),
-                    const SizedBox(height: 15),
-                    TextField(
-                      controller: wabaController,
-                      decoration: buildInputDecoration("WABA_ID"),
-                    ),
-                    const SizedBox(height: 30),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: OutlinedButton.icon(
-                        icon: Icon(Icons.save, color: primaryColor),
-                        onPressed: saveSettings,
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: primaryColor, width: 2),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
+        child:
+            isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        alignment: Alignment.center,
+                        child: const Text(
+                          "الإعدادات",
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
                           ),
-                          backgroundColor: Colors.white,
-                        ),
-                        label: Text(
-                          "حفظ",
-                          style: TextStyle(color: primaryColor, fontWeight: FontWeight.bold),
                         ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 10),
+                      const Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          "اعدادات الواتساب",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        value:
+                            configs.any((c) => c.id == selectedConfigId)
+                                ? selectedConfigId
+                                : null,
+                        hint: const Text("اختر الحساب"),
+                        isExpanded: true,
+                        items:
+                            configs.map((config) {
+                              return DropdownMenuItem<String>(
+                                value: config.id,
+                                child: Text(config.name),
+                              );
+                            }).toList(),
+                        onChanged: (value) {
+                          if (value != null) onConfigSelected(value);
+                        },
+                        decoration: buildInputDecoration(""),
+                      ),
+                      const SizedBox(height: 20),
+                      TextField(
+                        controller: tokenController,
+                        decoration: buildInputDecoration("TOKEN"),
+                      ),
+                      const SizedBox(height: 15),
+                      TextField(
+                        controller: phoneController,
+                        decoration: buildInputDecoration("PHONE_NUMBER_ID"),
+                      ),
+                      const SizedBox(height: 15),
+                      TextField(
+                        controller: wabaController,
+                        decoration: buildInputDecoration("WABA_ID"),
+                      ),
+                      const SizedBox(height: 30),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 50,
+                        child: OutlinedButton.icon(
+                          icon: Icon(Icons.save, color: primaryColor),
+                          onPressed: saveSettings,
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: primaryColor, width: 2),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            backgroundColor: Colors.white,
+                          ),
+                          label: Text(
+                            "حفظ",
+                            style: TextStyle(
+                              color: primaryColor,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
       ),
     );
   }

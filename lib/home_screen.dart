@@ -17,17 +17,16 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
-  String? selectedConfigId; // أضفنا هذا المتغير هنا
+  String? selectedConfigId;
 
   final GlobalKey<ConversationsScreenState> _convKey = GlobalKey();
 
   @override
   void initState() {
     super.initState();
-    loadHeaderConfig(); // تحميل الاسم عند تشغيل التطبيق
+    loadHeaderConfig();
   }
 
-  // دالة لجلب الاسم من التفضيلات
   Future<void> loadHeaderConfig() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -49,16 +48,12 @@ class _HomeScreenState extends State<HomeScreen> {
         appBar: AppBar(
           backgroundColor: Colors.grey[300],
           elevation: 0,
-          // هذه الخاصية تضمن توسيط العنوان في معظم المنصات
           centerTitle: true,
-
-          // نستخدم Row هنا فقط لكلمة واتساب لأنها في الطرف
           title: SizedBox(
             width: double.infinity,
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // 1. كلمة واتساب في أقصى اليمين
                 Align(
                   alignment: Alignment.centerRight,
                   child: const Text(
@@ -71,7 +66,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-                // 2. اسم الحساب في المنتصف الحقيقي للشاشة
                 if (selectedConfigId != null)
                   Text(
                     selectedConfigId!,
@@ -132,7 +126,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// -------------------- شاشة الدردشات (ConversationsScreen) --------------------
+/// -------------------- شاشة الدردشات  --------------------
 
 class ConversationsScreen extends StatefulWidget {
   const ConversationsScreen({super.key});
@@ -162,7 +156,6 @@ class ConversationsScreenState extends State<ConversationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // استخدمنا Scaffold هنا خصيصاً لإضافة الـ FloatingActionButton
     return Scaffold(
       backgroundColor: Colors.grey[300],
 
@@ -172,7 +165,6 @@ class ConversationsScreenState extends State<ConversationsScreen> {
         child: const Icon(Icons.chat_bubble, color: Colors.white),
         onPressed: () {
           if (selectedConfigId != null) {
-            // هنا نفتح شاشة جهات اتصال الهاتف التي أنشأناها
             Navigator.push(
               context,
               MaterialPageRoute(
@@ -191,8 +183,7 @@ class ConversationsScreenState extends State<ConversationsScreen> {
         },
       ),
 
-      // محتوى الشاشة (الـ Column القديم الخاص بكِ)
-      body: Container(
+      body: SizedBox(
         width: double.infinity,
         height: double.infinity,
         child: Column(
@@ -253,87 +244,97 @@ class ConversationsScreenState extends State<ConversationsScreen> {
                                       as Map<String, dynamic>;
                               String phone = chatDocs[index].id;
 
-                              return FutureBuilder<DocumentSnapshot>(
-                                future:
-                                    FirebaseFirestore.instance
-                                        .collection('customers')
-                                        .doc(phone)
-                                        .get(),
-                                builder: (context, customerSnapshot) {
-                                  String displayName = phone;
+                              // استخراج القيم مباشرة من بيانات الشات
+                              String displayName =
+                                  chatData['display_name'] ??
+                                  ''; // من جهات الاتصال
+                              String senderName =
+                                  chatData['sender_name'] ??
+                                  ''; // من واتساب (webhook)
+                              String lastMsg = chatData['last_message'] ?? '';
 
-                                  if (customerSnapshot.hasData &&
-                                      customerSnapshot.data!.exists) {
-                                    var customerData =
-                                        customerSnapshot.data!.data()
-                                            as Map<String, dynamic>;
-                                    displayName =
-                                        customerData['display_name'] ??
-                                        customerData['sender_name'] ??
-                                        phone;
-                                  }
+                              return Column(
+                                children: [
+                                  ListTile(
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 4,
+                                    ),
+                                    leading: const CircleAvatar(
+                                      radius: 22,
+                                      backgroundColor: Color.fromARGB(
+                                        255,
+                                        3,
+                                        145,
+                                        5,
+                                      ),
+                                      child: Icon(
+                                        Icons.person,
+                                        color: Colors.white,
+                                        size: 22,
+                                      ),
+                                    ),
 
-                                  return Column(
-                                    children: [
-                                      ListTile(
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                              horizontal: 12,
-                                              vertical: 4,
+                                    title: Text(
+                                      displayName.isNotEmpty
+                                          ? displayName
+                                          : phone,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                      ),
+                                    ),
+
+                                    subtitle: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        if (senderName.isNotEmpty)
+                                          Text(
+                                            "($senderName)",
+                                            style: TextStyle(
+                                              color: Colors.blueGrey[700],
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w500,
                                             ),
-                                        leading: const CircleAvatar(
-                                          radius: 22,
-                                          backgroundColor: Color.fromARGB(
-                                            255,
-                                            3,
-                                            145,
-                                            5,
                                           ),
-                                          child: Icon(
-                                            Icons.person,
-                                            color: Colors.white,
-                                            size: 22,
-                                          ),
-                                        ),
-                                        title: Text(
-                                          displayName,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 15,
-                                          ),
-                                        ),
-                                        subtitle: Text(
-                                          chatData['last_message'] ?? '',
+                                        Text(
+                                          lastMsg,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(fontSize: 13),
                                         ),
-                                        trailing: const Icon(
-                                          Icons.arrow_forward_ios,
-                                          size: 14,
-                                          color: Colors.grey,
+                                      ],
+                                    ),
+                                    trailing: const Icon(
+                                      Icons.arrow_forward_ios,
+                                      size: 14,
+                                      color: Colors.grey,
+                                    ),
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder:
+                                              (context) => ChatDetailScreen(
+                                                phoneNumber: phone,
+                                                configId: selectedConfigId!,
+
+                                                receiverName:
+                                                    displayName.isNotEmpty
+                                                        ? displayName
+                                                        : senderName,
+                                              ),
                                         ),
-                                        onTap: () {
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder:
-                                                  (context) => ChatDetailScreen(
-                                                    phoneNumber: phone,
-                                                    configId: selectedConfigId!,
-                                                  ),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                      Divider(
-                                        thickness: 0.5,
-                                        height: 1,
-                                        color: Colors.grey[400],
-                                      ),
-                                    ],
-                                  );
-                                },
+                                      );
+                                    },
+                                  ),
+                                  Divider(
+                                    thickness: 0.5,
+                                    height: 1,
+                                    color: Colors.grey[400],
+                                  ),
+                                ],
                               );
                             },
                           );
@@ -347,7 +348,7 @@ class ConversationsScreenState extends State<ConversationsScreen> {
   }
 }
 
-/// -------------------- باقي الصفحات --------------------
+/// -------------------- شاشة الملف الشخصي--------------------
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -360,6 +361,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String? token;
   String? phoneNumberId;
   String? fetchedNumber;
+  String? profilePictureUrl;
   bool isLoading = true;
 
   @override
@@ -374,7 +376,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     phoneNumberId = prefs.getString('PHONE_NUMBER_ID');
 
     if (token != null && phoneNumberId != null) {
-      fetchedNumber = await fetchWhatsAppNumber(token!, phoneNumberId!);
+      await fetchWhatsAppProfileData(token!, phoneNumberId!);
     }
 
     if (mounted) {
@@ -384,19 +386,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<String?> fetchWhatsAppNumber(String token, String phoneId) async {
+  Future<void> fetchWhatsAppProfileData(String token, String phoneId) async {
     try {
-      final url = Uri.parse(
-        'https://graph.facebook.com/v22.0/$phoneId?fields=display_phone_number&access_token=$token',
+      final phoneUrl = Uri.parse(
+        'https://graph.facebook.com/v18.0/$phoneId?fields=display_phone_number&access_token=$token',
       );
-      final response = await http.get(url);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return data['display_phone_number'] as String?;
+      final phoneResponse = await http.get(phoneUrl);
+
+      final profileUrl = Uri.parse(
+        'https://graph.facebook.com/v18.0/$phoneId/whatsapp_business_profile?fields=profile_picture_url&access_token=$token',
+      );
+      final profileResponse = await http.get(profileUrl);
+
+      if (phoneResponse.statusCode == 200) {
+        final phoneData = jsonDecode(phoneResponse.body);
+        String rawNumber = phoneData['display_phone_number'] ?? "";
+        setState(() {
+          fetchedNumber = rawNumber.replaceAll(RegExp(r'[\+\s]'), '');
+        });
       }
-      return null;
+
+      if (profileResponse.statusCode == 200) {
+        final profileData = jsonDecode(profileResponse.body);
+        setState(() {
+          if (profileData['data'] != null && profileData['data'].isNotEmpty) {
+            profilePictureUrl = profileData['data'][0]['profile_picture_url'];
+          }
+        });
+      }
     } catch (e) {
-      return null;
+      print("❌ خطأ في جلب البيانات: $e");
     }
   }
 
@@ -407,28 +426,100 @@ class _ProfileScreenState extends State<ProfileScreen> {
       body:
           isLoading
               ? const Center(child: CircularProgressIndicator())
-              : Center(
+              : SizedBox(
+                width: double.infinity,
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    const SizedBox(height: 20),
-                    const CircleAvatar(
-                      radius: 50,
-                      backgroundColor: Colors.grey,
-                      child: Icon(Icons.person, color: Colors.white, size: 50),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      fetchedNumber ?? "لا يوجد رقم",
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 22,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: const Text(
+                          "الملف الشخصي",
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      phoneNumberId ?? '-',
-                      style: const TextStyle(fontSize: 16),
+
+                    const SizedBox(height: 30),
+
+                    Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: const Color.fromARGB(
+                            255,
+                            3,
+                            145,
+                            5,
+                          ).withOpacity(0.3),
+                          width: 4,
+                        ),
+                      ),
+                      child: CircleAvatar(
+                        radius: 65,
+                        backgroundColor: Colors.grey[400],
+                        backgroundImage:
+                            (profilePictureUrl != null)
+                                ? NetworkImage(profilePictureUrl!)
+                                : null,
+                        child:
+                            (profilePictureUrl == null)
+                                ? const Icon(
+                                  Icons.person,
+                                  color: Colors.white,
+                                  size: 70,
+                                )
+                                : null,
+                      ),
                     ),
+
+                    const SizedBox(height: 25),
+
+                    Directionality(
+                      textDirection: TextDirection.ltr,
+                      child: Text(
+                        fetchedNumber != null
+                            ? "+$fetchedNumber"
+                            : "لا يوجد رقم",
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 26,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      child: Text(
+                        "ID: ${phoneNumberId ?? '-'}",
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey[700],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+
+                    const Spacer(),
                   ],
                 ),
               ),

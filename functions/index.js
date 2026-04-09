@@ -31,34 +31,61 @@ exports.whatsappWebhook = onRequest({
     if (req.method === "POST") {
         try {
             const body = req.body;
+            const entry = body.entry?.[0];
+            const changes = entry?.changes?.[0];
+            const value = changes?.value;
 
-            if (body.object === "whatsapp_business_account" && 
-                body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
-                
-                const value = body.entry[0].changes[0].value;
+            if (!value) return res.sendStatus(200);
+
+            // --- أولاً: معالجة تحديثات حالة الرسائل (علامات الصح) ---
+            if (value.statuses && value.statuses[0]) {
+                const statusUpdate = value.statuses[0];
+                const messageId = statusUpdate.id; // wamid...
+                const newStatus = statusUpdate.status; // delivered, read, etc.
+                const recipientId = statusUpdate.recipient_id;
+
+                // البحث عن المحادثة لتحديث حالة الرسالة بداخلها
+                // ملاحظة: نحتاج configId، لذا سنبحث باستخدام الـ phone_number_id الخاص بـ Metadata
+                const incomingPhoneNumberId = value.metadata.phone_number_id;
+                const configQuery = await db.collection("whatsapp_config")
+                    .where("PHONE_NUMBER_ID", "==", incomingPhoneNumberId)
+                    .limit(1)
+                    .get();
+
+                if (!configQuery.empty) {
+                    const configDocId = configQuery.docs[0].id;
+                    await db.collection("whatsapp_config")
+                        .doc(configDocId)
+                        .collection("chats")
+                        .doc(recipientId)
+                        .collection("messages")
+                        .doc(messageId) // نستخدم المعرف كـ Document ID
+                        .update({ status: newStatus })
+                        .catch(err => console.log("Message doc not found for status update, skipping."));
+                }
+            }
+
+            // --- ثانياً: معالجة الرسائل الواردة (المنطق الحالي) ---
+            if (value.messages && value.messages[0]) {
                 const message = value.messages[0];
-                const contact = value.contacts[0];
+                const contact = value.contacts?.[0];
                 const metadata = value.metadata;
 
                 const senderPhone = message.from; 
                 const incomingPhoneNumberId = metadata.phone_number_id; 
                 
-                // متغيرات لاستخراج المحتوى ورقم البحث
                 let messageText = "";
                 let resultNumber = "";
 
-                // --- استخراج البيانات بناءً على نوع الرسالة ---
                 if (message.type === "text") {
                     messageText = message.text.body.trim();
-                    // إذا كان النص أرقاماً فقط، نعتبره رقم نتيجة
                     if (/^\d+$/.test(messageText)) {
                         resultNumber = messageText;
                     }
                 } 
                 else if (message.type === "button") {
-                    messageText = message.button.text; // نص الزر ليظهر في سجل المحادثات
+                    messageText = message.button.text; 
                     try {
-                        // قراءة الـ visitId من الـ payload المرسل في القالب
                         const payloadData = JSON.parse(message.button.payload);
                         resultNumber = String(payloadData.visitId);
                     } catch (e) {
@@ -66,38 +93,36 @@ exports.whatsappWebhook = onRequest({
                     }
                 }
 
-                // البحث عن إعدادات الواتساب لتحديد المستند الرئيسي
                 const configQuery = await db.collection("whatsapp_config")
-                                            .where("PHONE_NUMBER_ID", "==", incomingPhoneNumberId)
-                                            .limit(1)
-                                            .get();
+                    .where("PHONE_NUMBER_ID", "==", incomingPhoneNumberId)
+                    .limit(1)
+                    .get();
 
                 if (configQuery.empty) return res.sendStatus(200);
 
                 const configDocId = configQuery.docs[0].id; 
                 const chatRef = db.collection("whatsapp_config")
-                                  .doc(configDocId)
-                                  .collection("chats")
-                                  .doc(senderPhone);
+                    .doc(configDocId)
+                    .collection("chats")
+                    .doc(senderPhone);
 
-                // حفظ الرسالة المستلمة في Firestore
                 await chatRef.set({
                     'last_message': messageText || "📄 وسائط",
                     'timestamp': admin.firestore.FieldValue.serverTimestamp(),
                     'sender_phone': senderPhone,
-                    'sender_name': contact.profile.name || "Unknown"
+                    'sender_name': (contact && contact.profile) ? contact.profile.name : "Unknown"
                 }, { merge: true });
 
-                await chatRef.collection("messages").add({
+                // حفظ الرسالة المستلمة (باستخدام ID واتساب للرسالة الواردة أيضاً)
+                await chatRef.collection("messages").doc(message.id).set({
                     'message_body': messageText || "📄 وسائط",
                     'type': 'received',
+                    'message_id': message.id,
                     'timestamp': admin.firestore.FieldValue.serverTimestamp(),
                 });
 
-                // --- تنفيذ البحث إذا توفر رقم نتيجة (من نص أو زر) ---
                 if (resultNumber !== "") {
                     let targetCollection = "";
-
                     if (incomingPhoneNumberId === "1151556284697196") {
                         targetCollection = "alroomi";
                     } else if (incomingPhoneNumberId === "1114284988426114") {
@@ -112,7 +137,7 @@ exports.whatsappWebhook = onRequest({
                             if (data.result_url) {
                                 const pdfUrl = data.result_url;
 
-                                await axios.post(
+                                const fbResponse = await axios.post(
                                     `https://graph.facebook.com/v25.0/${incomingPhoneNumberId}/messages`,
                                     {
                                         "messaging_product": "whatsapp",
@@ -126,20 +151,24 @@ exports.whatsappWebhook = onRequest({
                                     { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } }
                                 );
 
+                                // حفظ رد البوت التلقائي مع المعرف الخاص به لتتبع حالته
+                                const botMsgId = fbResponse.data.messages[0].id;
                                 const successMsg = `تم إرسال ملف النتائج رقم: ${resultNumber}`;
-                                await chatRef.collection("messages").add({
+                                
+                                await chatRef.collection("messages").doc(botMsgId).set({
                                     'message_body': successMsg,
                                     'type': 'sent', 
+                                    'status': 'sent',
+                                    'message_id': botMsgId,
                                     'timestamp': admin.firestore.FieldValue.serverTimestamp(),
                                     'is_bot': true 
                                 });
                                 await chatRef.update({ 'last_message': successMsg });
                             }
                         } else {
-                            // إرسال رد "لا توجد نتيجة"
                             const errorMsg = `عذراً، لا توجد نتيجة مسجلة بالرقم: ${resultNumber}`;
                             
-                            await axios.post(
+                            const fbResponse = await axios.post(
                                 `https://graph.facebook.com/v25.0/${incomingPhoneNumberId}/messages`,
                                 {
                                     "messaging_product": "whatsapp",
@@ -150,9 +179,12 @@ exports.whatsappWebhook = onRequest({
                                 { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } }
                             );
 
-                            await chatRef.collection("messages").add({
+                            const botMsgId = fbResponse.data.messages[0].id;
+                            await chatRef.collection("messages").doc(botMsgId).set({
                                 'message_body': errorMsg,
                                 'type': 'sent', 
+                                'status': 'sent',
+                                'message_id': botMsgId,
                                 'timestamp': admin.firestore.FieldValue.serverTimestamp(),
                                 'is_bot': true 
                             });
