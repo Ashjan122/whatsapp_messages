@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart' as intl;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:whatsapp_messages/chat_details_screen.dart';
 import 'package:whatsapp_messages/phone_contact_screen.dart';
@@ -153,6 +154,37 @@ class ConversationsScreenState extends State<ConversationsScreen> {
     });
     print("🔄 تم تحديث الحساب المختار إلى: $selectedConfigId");
   }
+  // ... داخل كلاس ConversationsScreenState
+
+  String formatChatTimestamp(Timestamp? timestamp) {
+    if (timestamp == null) return "";
+
+    DateTime date = timestamp.toDate();
+    DateTime now = DateTime.now();
+
+    // حساب الفرق بالأيام مع تصفير الساعات لمقارنة الأيام بدقة
+    DateTime today = DateTime(now.year, now.month, now.day);
+    DateTime chatDate = DateTime(date.year, date.month, date.day);
+
+    final difference = today.difference(chatDate).inDays;
+
+    if (difference == 0) {
+      // إذا كان اليوم: عرض الساعة (مثال: 10:30 PM)
+      return intl.DateFormat.jm().format(date);
+    } else if (difference == 1) {
+      // إذا كان أمس
+      return "أمس";
+    } else if (difference < 7) {
+      // إذا كان خلال الأسبوع الحالي: عرض اسم اليوم (اختياري)
+      // return DateFormat.EEEE('ar').format(date);
+      return intl.DateFormat('yyyy/MM/dd').format(date);
+    } else {
+      // تاريخ قديم
+      return intl.DateFormat('yyyy/MM/dd').format(date);
+    }
+  }
+
+  // ... داخل الـ build والـ ListView.builder
 
   @override
   Widget build(BuildContext context) {
@@ -243,6 +275,8 @@ class ConversationsScreenState extends State<ConversationsScreen> {
                                   chatDocs[index].data()
                                       as Map<String, dynamic>;
                               String phone = chatDocs[index].id;
+                              Timestamp? timestamp =
+                                  chatData['timestamp'] as Timestamp?;
 
                               // استخراج القيم مباشرة من بيانات الشات
                               String displayName =
@@ -275,14 +309,31 @@ class ConversationsScreenState extends State<ConversationsScreen> {
                                       ),
                                     ),
 
-                                    title: Text(
-                                      displayName.isNotEmpty
-                                          ? displayName
-                                          : phone,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15,
-                                      ),
+                                    title: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            displayName.isNotEmpty
+                                                ? displayName
+                                                : phone,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 15,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        // --- هنا يظهر الوقت ---
+                                        Text(
+                                          formatChatTimestamp(timestamp),
+                                          style: TextStyle(
+                                            color: Colors.grey[600],
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ],
                                     ),
 
                                     subtitle: Column(

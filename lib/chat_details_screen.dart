@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:audioplayers/audioplayers.dart'; // مكتبة الصوت
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -27,6 +29,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   String? accessToken;
   String? phoneNumberId;
   String? wabaId;
+  bool isLoading = true;
 
   @override
   void initState() {
@@ -34,12 +37,20 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     loadSettings();
   }
 
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
   Future<void> loadSettings() async {
+    setState(() => isLoading = true);
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       accessToken = prefs.getString('TOKEN');
       phoneNumberId = prefs.getString('PHONE_NUMBER_ID');
       wabaId = prefs.getString('WABA_ID');
+      isLoading = false;
     });
   }
 
@@ -47,6 +58,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     if (timestamp == null) return "...";
     DateTime date = timestamp.toDate();
     return DateFormat('h:mm a').format(date);
+  }
+
+  String _getDividerDate(Timestamp? timestamp) {
+    if (timestamp == null) return "";
+    DateTime date = timestamp.toDate();
+    DateTime now = DateTime.now();
+    DateTime today = DateTime(now.year, now.month, now.day);
+    DateTime yesterday = today.subtract(const Duration(days: 1));
+    DateTime messageDate = DateTime(date.year, date.month, date.day);
+
+    if (messageDate == today) return "اليوم";
+    if (messageDate == yesterday) return "أمس";
+    return DateFormat('yyyy/MM/dd', 'ar').format(date);
   }
 
   Widget _buildStatusIcon(String? status) {
@@ -57,8 +81,70 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         return const Icon(Icons.done_all, size: 14, color: Colors.grey);
       case 'read':
         return const Icon(Icons.done_all, size: 14, color: Colors.blue);
+      case 'pending': // الحالة الجديدة أثناء الإرسال
+        return const Icon(Icons.access_time, size: 12, color: Colors.grey);
+      case 'failed':
+        return const Icon(Icons.error_outline, size: 14, color: Colors.red);
       default:
         return const Icon(Icons.access_time, size: 12, color: Colors.grey);
+    }
+  }
+
+  Widget _buildMessageContent(Map<String, dynamic> data) {
+    String type = data['message_type'] ?? 'text';
+    String? mediaUrl = data['media_url'];
+
+    if (type == 'image' && mediaUrl != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            onTap:
+                () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ImagePreviewScreen(imageUrl: mediaUrl),
+                  ),
+                ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Hero(
+                tag: mediaUrl,
+                child: CachedNetworkImage(
+                  imageUrl: mediaUrl,
+                  width: 200,
+                  placeholder:
+                      (_, __) => Container(
+                        width: 200,
+                        height: 150,
+                        color: Colors.grey[300],
+                        child: const Center(child: CircularProgressIndicator()),
+                      ),
+                  errorWidget:
+                      (_, __, ___) => const Icon(Icons.broken_image, size: 50),
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+          ),
+          if (data['message_body'] != "📷 صورة") ...[
+            const SizedBox(height: 5),
+            Text(data['message_body'], style: const TextStyle(fontSize: 15)),
+          ],
+        ],
+      );
+    }
+    // تعديل قسم الصوت ليدعم التشغيل الفعلي
+    else if ((type == 'audio' || type == 'voice') && mediaUrl != null) {
+      return SizedBox(
+        width: MediaQuery.of(context).size.width * 0.65, // تحديد عرض شريط الصوت
+        child: VoiceMessagePlayer(url: mediaUrl),
+      );
+    } else {
+      return Text(
+        data['message_body'] ?? '',
+        style: const TextStyle(fontSize: 15),
+      );
     }
   }
 
@@ -88,13 +174,22 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         }).toList();
       }
     } catch (e) {
-      print("❌ Error fetching templates: $e");
+      print("Error: $e");
     }
     return [];
   }
 
   Future<void> sendReply(String text) async {
     if (text.isEmpty || accessToken == null || phoneNumberId == null) return;
+
+    final String tempMessageId =
+        "temp_${DateTime.now().millisecondsSinceEpoch}";
+    final String messageText = text;
+    _messageController.clear(); // مسح الحقل فوراً لراحة المستخدم
+
+    // 1. إضافة الرسالة محلياً (في Firestore) بحالة "pending" لتظهر فوراً
+    await _saveMessageLocally(messageText, tempMessageId);
+
     final url = Uri.parse(
       'https://graph.facebook.com/v18.0/$phoneNumberId/messages',
     );
@@ -110,25 +205,98 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           "messaging_product": "whatsapp",
           "to": widget.phoneNumber,
           "type": "text",
-          "text": {"body": text},
+          "text": {"body": messageText},
         }),
       );
 
       if (response.statusCode == 200) {
-        final responseData = json.decode(response.body);
-        final String messageId = responseData['messages'][0]['id'];
+        final data = json.decode(response.body);
+        final String officialMessageId = data['messages'][0]['id'];
 
-        await _saveMessageToFirestore(text, 'sent', messageId);
-        _messageController.clear();
+        // 2. تحديث الرسالة بالمعرف الرسمي وحالة "sent" بعد نجاح الإرسال
+        await _finalizeMessageStatus(
+          tempMessageId,
+          officialMessageId,
+          messageText,
+        );
+      } else {
+        // يمكن هنا تحديث الحالة إلى "failed" إذا فشل الإرسال
+        await _updateMessageStatus(tempMessageId, 'failed');
       }
     } catch (e) {
-      print("❌ Error sending message: $e");
+      print("Error sending message: $e");
+      await _updateMessageStatus(tempMessageId, 'failed');
     }
+  }
+
+  // لحفظ الرسالة فور النقر على زر الإرسال
+  Future<void> _saveMessageLocally(String body, String tempId) async {
+    var chatRef = FirebaseFirestore.instance
+        .collection('whatsapp_config')
+        .doc(widget.configId)
+        .collection('chats')
+        .doc(widget.phoneNumber);
+
+    // تحديث المحادثة الرئيسية (آخر رسالة)
+    await chatRef.set({
+      'last_message': body,
+      'timestamp': FieldValue.serverTimestamp(),
+      'sender_phone': widget.phoneNumber,
+    }, SetOptions(merge: true));
+
+    // إضافة الرسالة في المجموعة الفرعية بحالة انتظار
+    await chatRef.collection('messages').doc(tempId).set({
+      'message_body': body,
+      'type': 'sent', // لأن المستخدم هو من أرسلها
+      'message_type': 'text',
+      'status': 'pending', // الحالة التي ستظهر "الساعة"
+      'message_id': tempId,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+  }
+
+  // لاستبدال المعرف المؤقت بالرسمي وتحديث الحالة
+  Future<void> _finalizeMessageStatus(
+    String tempId,
+    String officialId,
+    String body,
+  ) async {
+    var chatRef = FirebaseFirestore.instance
+        .collection('whatsapp_config')
+        .doc(widget.configId)
+        .collection('chats')
+        .doc(widget.phoneNumber);
+
+    // حذف الرسالة المؤقتة وإضافة الرسمية أو عمل تحديث شامل
+    WriteBatch batch = FirebaseFirestore.instance.batch();
+
+    batch.delete(chatRef.collection('messages').doc(tempId));
+    batch.set(chatRef.collection('messages').doc(officialId), {
+      'message_body': body,
+      'type': 'sent',
+      'message_type': 'text',
+      'status': 'sent',
+      'message_id': officialId,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+  }
+
+  // لتحديث الحالة فقط (في حال الفشل مثلاً)
+  Future<void> _updateMessageStatus(String id, String status) async {
+    await FirebaseFirestore.instance
+        .collection('whatsapp_config')
+        .doc(widget.configId)
+        .collection('chats')
+        .doc(widget.phoneNumber)
+        .collection('messages')
+        .doc(id)
+        .update({'status': status});
   }
 
   Future<void> _updateDisplayName(String newName) async {
     if (newName.isEmpty) return;
-
     try {
       await FirebaseFirestore.instance
           .collection('whatsapp_config')
@@ -136,60 +304,80 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           .collection('chats')
           .doc(widget.phoneNumber)
           .update({'display_name': newName});
-
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text("تم حفظ الاسم بنجاح")));
     } catch (e) {
-      print("❌ Error updating name: $e");
+      print("Error: $e");
     }
   }
 
   void _showSaveContactDialog() {
-    final TextEditingController nameController = TextEditingController(
-      text: widget.receiverName,
-    );
-
+    final nameController = TextEditingController(text: widget.receiverName);
     showDialog(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text("حفظ جهة الاتصال", textAlign: TextAlign.right),
-          content: TextField(
-            controller: nameController,
-            textAlign: TextAlign.right,
-            decoration: const InputDecoration(hintText: "أدخل اسم الشخص"),
+      builder:
+          (context) => AlertDialog(
+            title: const Text("حفظ جهة الاتصال", textAlign: TextAlign.right),
+            content: TextField(
+              controller: nameController,
+              textAlign: TextAlign.right,
+              decoration: const InputDecoration(hintText: "أدخل اسم الشخص"),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  "إلغاء",
+                  style: TextStyle(color: Color(0xFF039105)),
+                ),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  _updateDisplayName(nameController.text.trim());
+                  Navigator.pop(context);
+                },
+                child: const Text(
+                  "حفظ",
+                  style: TextStyle(color: Color(0xFF039105)),
+                ),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(
-                "إلغاء",
-                style: TextStyle(color: Color.fromARGB(255, 3, 145, 5)),
-              ),
+    );
+  }
+
+  Widget _buildDateDivider(Timestamp? timestamp) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.blueGrey[50], // لون خفيف خلف التاريخ
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            _getDividerDate(
+              timestamp,
+            ), // تستدعي الدالة التي ترجع "اليوم" أو "أمس"
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey[700],
             ),
-            ElevatedButton(
-              onPressed: () {
-                _updateDisplayName(nameController.text.trim());
-                Navigator.pop(context);
-              },
-              child: const Text(
-                "حفظ",
-                style: TextStyle(color: Color.fromARGB(255, 3, 145, 5)),
-              ),
-            ),
-          ],
-        );
-      },
+          ),
+        ),
+      ),
     );
   }
 
   Future<void> sendTemplate(String templateName, String langCode) async {
     if (accessToken == null || phoneNumberId == null) return;
+    setState(() => isLoading = true);
     final url = Uri.parse(
       'https://graph.facebook.com/v18.0/$phoneNumberId/messages',
     );
-
     try {
       final response = await http.post(
         url,
@@ -207,18 +395,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           },
         }),
       );
-
       if (response.statusCode == 200) {
-        final responseData = json.decode(response.body);
-        final String messageId = responseData['messages'][0]['id'];
+        final data = json.decode(response.body);
         await _saveMessageToFirestore(
           "📄 قالب: $templateName",
           'sent',
-          messageId,
+          data['messages'][0]['id'],
+          'template',
         );
       }
     } catch (e) {
-      print("❌ Error sending template: $e");
+      print("Error: $e");
+    } finally {
+      setState(() => isLoading = false);
     }
   }
 
@@ -226,22 +415,22 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     String body,
     String type,
     String messageId,
+    String messageType,
   ) async {
     var chatRef = FirebaseFirestore.instance
         .collection('whatsapp_config')
         .doc(widget.configId)
         .collection('chats')
         .doc(widget.phoneNumber);
-
     await chatRef.set({
       'last_message': body,
       'timestamp': FieldValue.serverTimestamp(),
       'sender_phone': widget.phoneNumber,
     }, SetOptions(merge: true));
-
     await chatRef.collection('messages').doc(messageId).set({
       'message_body': body,
       'type': type,
+      'message_type': messageType,
       'status': 'sent',
       'message_id': messageId,
       'timestamp': FieldValue.serverTimestamp(),
@@ -258,7 +447,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              (widget.receiverName != null && widget.receiverName!.isNotEmpty)
+              (widget.receiverName?.isNotEmpty == true)
                   ? widget.receiverName!
                   : widget.phoneNumber,
               style: const TextStyle(
@@ -267,7 +456,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-            if (widget.receiverName != null && widget.receiverName!.isNotEmpty)
+            if (widget.receiverName?.isNotEmpty == true)
               Text(
                 widget.phoneNumber,
                 style: const TextStyle(color: Colors.grey, fontSize: 12),
@@ -279,34 +468,34 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         actions: [
           PopupMenuButton<String>(
             onSelected: (value) {
-              if (value == 'save_contact') {
-                _showSaveContactDialog();
-              }
+              if (value == 'save_contact') _showSaveContactDialog();
             },
-            itemBuilder: (BuildContext context) {
-              return [
-                const PopupMenuItem<String>(
-                  value: 'save_contact',
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      Text("حفظ جهة الاتصال"),
-                      SizedBox(width: 10),
-                      Icon(
-                        Icons.person_add_alt_1,
-                        color: Color.fromARGB(255, 3, 145, 5),
-                      ),
-                    ],
+            itemBuilder:
+                (context) => [
+                  const PopupMenuItem(
+                    value: 'save_contact',
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Text("حفظ جهة الاتصال"),
+                        SizedBox(width: 10),
+                        Icon(Icons.person_add_alt_1, color: Color(0xFF039105)),
+                      ],
+                    ),
                   ),
-                ),
-              ];
-            },
+                ],
           ),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
+            if (isLoading)
+              const LinearProgressIndicator(
+                backgroundColor: Colors.transparent,
+                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF039105)),
+                minHeight: 3,
+              ),
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
                 stream:
@@ -322,84 +511,99 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   if (!snapshot.hasData)
                     return const Center(child: CircularProgressIndicator());
                   final messages = snapshot.data!.docs;
-                  if (messages.isEmpty)
-                    return const Center(child: Text("لا توجد رسائل بعد"));
-
                   return ListView.builder(
                     reverse: true,
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       var data = messages[index].data() as Map<String, dynamic>;
                       bool isMe = data['type'] == 'sent';
+                      Timestamp? ts = data['timestamp'] as Timestamp?;
 
-                      return Align(
-                        alignment:
-                            isMe ? Alignment.centerRight : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 4,
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          constraints: BoxConstraints(
-                            maxWidth: MediaQuery.of(context).size.width * 0.75,
-                          ),
-                          decoration: BoxDecoration(
-                            color:
-                                isMe ? const Color(0xFFDCF8C6) : Colors.white,
-                            borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(12),
-                              topRight: const Radius.circular(12),
-                              bottomLeft:
-                                  isMe
-                                      ? const Radius.circular(12)
-                                      : const Radius.circular(0),
-                              bottomRight:
-                                  isMe
-                                      ? const Radius.circular(0)
-                                      : const Radius.circular(12),
-                            ),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Colors.black12,
-                                blurRadius: 2,
-                                offset: Offset(0, 1),
+                      // --- منطق فاصل التاريخ ---
+                      bool showDateDivider = false;
+                      if (ts != null) {
+                        if (index == messages.length - 1) {
+                          // أول رسالة في المحادثة (التي تكون في نهاية القائمة لأنها الأقدم)
+                          showDateDivider = true;
+                        } else {
+                          // قارن تاريخ الرسالة الحالية بالرسالة "السابقة" زمنياً (التي تليها في الـ index)
+                          var nextData =
+                              messages[index + 1].data()
+                                  as Map<String, dynamic>;
+                          Timestamp? nextTs =
+                              nextData['timestamp'] as Timestamp?;
+
+                          if (nextTs != null) {
+                            DateTime date1 = ts.toDate();
+                            DateTime date2 = nextTs.toDate();
+                            // إذا كان اليوم أو الشهر أو السنة مختلفين، أظهر الفاصل
+                            if (date1.year != date2.year ||
+                                date1.month != date2.month ||
+                                date1.day != date2.day) {
+                              showDateDivider = true;
+                            }
+                          }
+                        }
+                      }
+
+                      return Column(
+                        children: [
+                          if (showDateDivider)
+                            _buildDateDivider(ts), // إضافة الفاصل هنا
+                          Align(
+                            alignment:
+                                isMe
+                                    ? Alignment.centerRight
+                                    : Alignment.centerLeft,
+                            child: Container(
+                              // ... (باقي كود الحاوية الخاص بالرسالة كما هو)
+                              margin: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 4,
                               ),
-                            ],
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                data['message_body'] ?? '',
-                                style: const TextStyle(fontSize: 15),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
                               ),
-                              const SizedBox(height: 4),
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    _formatTime(
-                                      data['timestamp'] as Timestamp?,
-                                    ),
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.grey[600],
-                                    ),
+                              decoration: BoxDecoration(
+                                color:
+                                    isMe
+                                        ? const Color(0xFFDCF8C6)
+                                        : Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: Colors.black12,
+                                    blurRadius: 2,
                                   ),
-                                  if (isMe) ...[
-                                    const SizedBox(width: 4),
-                                    _buildStatusIcon(data['status']),
-                                  ],
                                 ],
                               ),
-                            ],
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  _buildMessageContent(data),
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        _formatTime(ts),
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.grey[600],
+                                        ),
+                                      ),
+                                      if (isMe) ...[
+                                        const SizedBox(width: 4),
+                                        _buildStatusIcon(data['status']),
+                                      ],
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       );
                     },
                   );
@@ -415,85 +619,205 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
   Widget _buildInputArea() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.grey[300]!)),
-      ),
+      padding: const EdgeInsets.all(8),
+      color: Colors.white,
       child: Row(
         children: [
           FutureBuilder<List<Map<String, dynamic>>>(
             future: fetchMetaTemplates(),
-            builder: (context, snapshot) {
-              return PopupMenuButton<Map<String, dynamic>>(
-                icon: const Icon(Icons.apps, color: Colors.blue),
-                onSelected:
-                    (temp) => sendTemplate(temp['name'], temp['language']),
-                itemBuilder: (context) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return [
-                      const PopupMenuItem(
-                        child: Center(child: CircularProgressIndicator()),
-                      ),
-                    ];
-                  }
-                  if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                    return [const PopupMenuItem(child: Text("لا توجد قوالب"))];
-                  }
-                  return snapshot.data!
-                      .map(
-                        (temp) => PopupMenuItem<Map<String, dynamic>>(
-                          value: temp,
-                          child: ListTile(
-                            title: Text(
-                              temp['name'],
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13,
-                              ),
-                            ),
-                            subtitle: Text(
-                              temp['body'],
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 11),
-                            ),
+            builder:
+                (context, snapshot) => PopupMenuButton<Map<String, dynamic>>(
+                  icon: const Icon(Icons.apps, color: Colors.blue),
+                  onSelected:
+                      (temp) => sendTemplate(temp['name'], temp['language']),
+                  itemBuilder: (context) {
+                    if (!snapshot.hasData)
+                      return [
+                        const PopupMenuItem(child: Text("جاري التحميل...")),
+                      ];
+                    return snapshot.data!
+                        .map(
+                          (temp) => PopupMenuItem(
+                            value: temp,
+                            child: Text(temp['name']),
                           ),
-                        ),
-                      )
-                      .toList();
-                },
-              );
-            },
+                        )
+                        .toList();
+                  },
+                ),
           ),
           Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.grey[100],
-                borderRadius: BorderRadius.circular(25),
-              ),
-              child: TextField(
-                controller: _messageController,
-                maxLines: null,
-                decoration: const InputDecoration(
-                  hintText: "اكتب رسالة...",
-                  border: InputBorder.none,
+            child: TextField(
+              controller: _messageController,
+              decoration: InputDecoration(
+                hintText: "اكتب رسالة...",
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(25),
+                  borderSide: BorderSide.none,
                 ),
+                fillColor: Colors.grey[100],
+                filled: true,
               ),
             ),
           ),
           const SizedBox(width: 8),
           CircleAvatar(
-            backgroundColor: const Color.fromARGB(255, 3, 145, 5),
-            radius: 22,
+            backgroundColor: const Color(0xFF039105),
             child: IconButton(
-              icon: const Icon(Icons.send, color: Colors.white, size: 20),
+              icon: const Icon(Icons.send, color: Colors.white),
               onPressed: () => sendReply(_messageController.text),
             ),
           ),
         ],
       ),
     );
+  }
+}
+
+class ImagePreviewScreen extends StatelessWidget {
+  final String imageUrl;
+  const ImagePreviewScreen({super.key, required this.imageUrl});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: Center(
+        child: InteractiveViewer(child: CachedNetworkImage(imageUrl: imageUrl)),
+      ),
+    );
+  }
+}
+
+class VoiceMessagePlayer extends StatefulWidget {
+  final String url;
+  const VoiceMessagePlayer({super.key, required this.url});
+
+  @override
+  State<VoiceMessagePlayer> createState() => _VoiceMessagePlayerState();
+}
+
+class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
+  final AudioPlayer _player = AudioPlayer();
+  bool isPlaying = false;
+  Duration duration = Duration.zero;
+  Duration position = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _player.onPlayerStateChanged.listen((state) {
+      if (mounted) setState(() => isPlaying = state == PlayerState.playing);
+    });
+    _player.onDurationChanged.listen((newDuration) {
+      if (mounted) setState(() => duration = newDuration);
+    });
+    _player.onPositionChanged.listen((newPosition) {
+      if (mounted) setState(() => position = newPosition);
+    });
+    _player.onPlayerComplete.listen((event) {
+      if (mounted)
+        setState(() {
+          position = Duration.zero;
+          isPlaying = false;
+        });
+    });
+  }
+
+  @override
+  void dispose() {
+    _player.stop();
+    _player.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    double maxValue = duration.inMilliseconds.toDouble();
+    double currentValue = position.inMilliseconds.toDouble();
+    if (maxValue <= 0) maxValue = 1.0;
+    if (currentValue > maxValue) currentValue = maxValue;
+
+    return Container(
+      // تحديد عرض ثابت وصغير للفقاعة
+      constraints: const BoxConstraints(maxWidth: 220),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // زر التشغيل - تم تصغيره
+          GestureDetector(
+            onTap: () async {
+              if (isPlaying) {
+                await _player.pause();
+              } else {
+                await _player.play(UrlSource(widget.url));
+              }
+            },
+            child: Icon(
+              isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              size: 28, // حجم أصغر قليلاً
+              color: const Color(0xFF039105),
+            ),
+          ),
+          const SizedBox(width: 4), // مسافة بسيطة بين الزر والشريط
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 2.0, // جعل الخط نحيفاً جداً
+                    thumbShape: const RoundSliderThumbShape(
+                      enabledThumbRadius: 4.0,
+                    ), // تصغير دائرة السحب
+                    overlayShape: const RoundSliderOverlayShape(
+                      overlayRadius: 8.0,
+                    ), // تصغير هالة الضغط
+                    // إزالة المسافات الافتراضية من اليمين واليسار
+                    trackShape: const RectangularSliderTrackShape(),
+                  ),
+                  child: SizedBox(
+                    height:
+                        20, // تحديد ارتفاع صغير جداً للشريط لضغط المسافة الرأسية
+                    child: Slider(
+                      min: 0.0,
+                      max: maxValue,
+                      value: currentValue,
+                      activeColor: const Color(0xFF039105),
+                      inactiveColor: Colors.grey[300],
+                      onChanged: (value) async {
+                        await _player.seek(
+                          Duration(milliseconds: value.toInt()),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                // عرض التوقيت بشكل مدمج وأنيق
+                Padding(
+                  padding: const EdgeInsets.only(left: 2),
+                  child: Text(
+                    "${_formatDuration(position)} / ${_formatDuration(duration)}",
+                    style: TextStyle(
+                      fontSize: 8, // تصغير الخط جداً
+                      color: Colors.grey[700],
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDuration(Duration d) {
+    return "${d.inMinutes.remainder(60)}:${d.inSeconds.remainder(60).toString().padLeft(2, '0')}";
   }
 }
