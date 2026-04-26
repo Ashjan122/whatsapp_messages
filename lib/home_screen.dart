@@ -30,8 +30,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> loadHeaderConfig() async {
     final prefs = await SharedPreferences.getInstance();
+
+    String? savedId = prefs.getString('selectedConfigId');
+
+    if (savedId == null) {
+      savedId = "rolaco";
+      await prefs.setString('selectedConfigId', savedId);
+    }
+
     setState(() {
-      selectedConfigId = prefs.getString('selectedConfigId');
+      selectedConfigId = savedId;
     });
   }
 
@@ -79,7 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          actions: [
+          /*actions: [
             IconButton(
               icon: const Icon(
                 Icons.settings,
@@ -97,7 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 });
               },
             ),
-          ],
+          ],*/
         ),
         body: SafeArea(child: _pages[_currentIndex]),
         bottomNavigationBar: BottomNavigationBar(
@@ -148,10 +156,19 @@ class ConversationsScreenState extends State<ConversationsScreen> {
 
   Future<void> loadSelectedConfig() async {
     final prefs = await SharedPreferences.getInstance();
+
+    String? savedId = prefs.getString('selectedConfigId');
+
+    if (savedId == null) {
+      savedId = "rolaco";
+      await prefs.setString('selectedConfigId', savedId);
+    }
+
     setState(() {
-      selectedConfigId = prefs.getString('selectedConfigId');
+      selectedConfigId = savedId;
       isLoadingConfig = false;
     });
+
     print("🔄 تم تحديث الحساب المختار إلى: $selectedConfigId");
   }
   // ... داخل كلاس ConversationsScreenState

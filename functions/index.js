@@ -10,23 +10,20 @@ if (admin.apps.length === 0) {
 const db = admin.firestore();
 const storage = admin.storage();
 
-const VERIFY_TOKEN = "Alryyan12345#"; 
-const WHATSAPP_TOKEN = "EAAapSj9k2sABRIVNLKtomho0lxjbXkH9JXm1Asgzosmz0x3nsOAlDdzRauNcJOgYNwUfXzRz5xCetT0SqgKZAeJZAD2h92NaUnrXWDOiFyjdZAaStoF1d36EPgwzAxZC6UmihhYyGZCyx2JdlDIBvpl2JTTvNFdTPYi215N0GiS2XhmoHULg9F6WK6iwd7ZBklXgZDZD"; 
+const VERIFY_TOKEN = "Alryyan12345#";
+const AL_TAMAYOZ_PHONE_ID = "953041111231804"; // معرف رقم فرع التميز
 
-/**
- * دالة لتحميل الوسائط من واتساب ورفعها إلى Firebase Storage
- */
-async function uploadMediaToStorage(mediaId, folderName) {
+async function uploadMediaToStorage(mediaId, folderName, dynamicToken) {
     try {
         const getUrlResponse = await axios.get(`https://graph.facebook.com/v21.0/${mediaId}`, {
-            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
+            headers: { 'Authorization': `Bearer ${dynamicToken}` }
         });
         const whatsappMediaUrl = getUrlResponse.data.url;
         const mimeType = getUrlResponse.data.mime_type;
         const extension = mimeType.split('/')[1] || 'bin';
 
         const mediaResponse = await axios.get(whatsappMediaUrl, {
-            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
+            headers: { 'Authorization': `Bearer ${dynamicToken}` },
             responseType: 'arraybuffer'
         });
 
@@ -40,7 +37,7 @@ async function uploadMediaToStorage(mediaId, folderName) {
 
         const signedUrls = await file.getSignedUrl({
             action: 'read',
-            expires: '03-01-2500' 
+            expires: '03-01-2500'
         });
 
         return signedUrls[0];
@@ -50,9 +47,9 @@ async function uploadMediaToStorage(mediaId, folderName) {
     }
 }
 
-exports.whatsappWebhook = onRequest({ 
+exports.whatsappWebhook = onRequest({
     region: "us-central1",
-    invoker: "public" 
+    invoker: "public"
 }, async (req, res) => {
 
     if (req.method === "GET") {
@@ -76,76 +73,93 @@ exports.whatsappWebhook = onRequest({
 
             if (!value) return res.sendStatus(200);
 
-            // --- معالجة تحديثات الحالة ---
-            if (value.statuses && value.statuses[0]) {
-                const statusUpdate = value.statuses[0];
-                const messageId = statusUpdate.id;
-                const newStatus = statusUpdate.status;
-                const recipientId = statusUpdate.recipient_id;
+            const incomingPhoneNumberId = value.metadata.phone_number_id;
 
-                const incomingPhoneNumberId = value.metadata.phone_number_id;
-                const configQuery = await db.collection("whatsapp_config")
-                    .where("PHONE_NUMBER_ID", "==", incomingPhoneNumberId)
-                    .limit(1).get();
+            // --- 1. جلب الإعدادات ديناميكياً بناءً على الرقم المستلم ---
+            const configQuery = await db.collection("whatsapp_config")
+                .where("PHONE_NUMBER_ID", "==", incomingPhoneNumberId)
+                .limit(1).get();
 
-                if (!configQuery.empty) {
-                    const configDocId = configQuery.docs[0].id;
-                    await db.collection("whatsapp_config").doc(configDocId)
-                        .collection("chats").doc(recipientId)
-                        .collection("messages").doc(messageId)
-                        .update({ status: newStatus })
-                        .catch(() => {});
-                }
+            if (configQuery.empty) {
+                console.log(`⚠️ No config found for Phone ID: ${incomingPhoneNumberId}`);
+                return res.sendStatus(200);
             }
 
-            // --- معالجة الرسائل الواردة ---
+            const configDoc = configQuery.docs[0];
+            const configData = configDoc.data();
+            const actualConfigId = configDoc.id; // المعرف الصحيح (مثلاً alroomi_branch أو altamayoz_branch)
+            const currentToken = configData.TOKEN;
+
+            // مرجع المستند الحالي للفرع المستلم
+            const currentConfigRef = db.collection("whatsapp_config").doc(actualConfigId);
+
+            // --- 2. تحديثات الحالة (في الفرع الصحيح) ---
+            if (value.statuses && value.statuses[0]) {
+                const statusUpdate = value.statuses[0];
+                await currentConfigRef.collection("chats").doc(statusUpdate.recipient_id)
+                    .collection("messages").doc(statusUpdate.id)
+                    .update({ status: statusUpdate.status })
+                    .catch(() => {});
+            }
+
+            // --- 3. معالجة الرسائل الواردة ---
             if (value.messages && value.messages[0]) {
                 const message = value.messages[0];
                 const contact = value.contacts?.[0];
-                const senderPhone = message.from; 
-                const incomingPhoneNumberId = value.metadata.phone_number_id; 
-                
+                const senderPhone = message.from;
+                const senderName = (contact && contact.profile) ? contact.profile.name : "Unknown";
+
                 let messageText = "";
                 let resultNumber = "";
                 let mediaUrl = null;
                 let messageType = message.type;
+                let isOfferRegistration = false;
 
+                // تحليل الرسالة
                 if (message.type === "text") {
                     messageText = message.text.body.trim();
                     if (/^\d+$/.test(messageText)) resultNumber = messageText;
-                } 
+                }
+                else if (message.type === "interactive" && message.interactive.type === "button_reply") {
+                    messageText = message.interactive.button_reply.title.trim();
+                    if (messageText.includes("سارع بالتسجيل")) isOfferRegistration = true;
+                }
                 else if (message.type === "button") {
-                    messageText = message.button.text; 
+                    messageText = message.button.text.trim();
+                    if (messageText.includes("سارع بالتسجيل")) isOfferRegistration = true;
                     try {
                         const payloadData = JSON.parse(message.button.payload);
-                        resultNumber = String(payloadData.visitId);
+                        if (payloadData.visitId) resultNumber = String(payloadData.visitId);
                     } catch (e) {}
                 }
                 else if (message.type === "image") {
                     messageText = "📷 صورة";
-                    mediaUrl = await uploadMediaToStorage(message.image.id, "whatsapp_images");
+                    mediaUrl = await uploadMediaToStorage(message.image.id, "whatsapp_images", currentToken);
                 }
                 else if (message.type === "audio" || message.type === "voice") {
                     messageText = "🎤 رسالة صوتية";
-                    mediaUrl = await uploadMediaToStorage(message.audio.id, "whatsapp_audio");
+                    mediaUrl = await uploadMediaToStorage(message.audio.id, "whatsapp_audio", currentToken);
                 }
 
-                const configQuery = await db.collection("whatsapp_config")
-                    .where("PHONE_NUMBER_ID", "==", incomingPhoneNumberId)
-                    .limit(1).get();
+                // مرجع الدردشة (في مجلد الفرع المستلم فعلياً)
+                const chatRef = currentConfigRef.collection("chats").doc(senderPhone);
 
-                if (configQuery.empty) return res.sendStatus(200);
+                // --- شرط العروض: يتم فقط إذا كان الرقم المستلم هو التميز ---
+                if (isOfferRegistration && incomingPhoneNumberId === AL_TAMAYOZ_PHONE_ID) {
+                    await currentConfigRef.collection("offers").doc(senderPhone).set({
+                        'phone': senderPhone,
+                        'name': senderName,
+                        'clicked_at': admin.firestore.FieldValue.serverTimestamp(),
+                        'offer_name': "offer_1"
+                    }, { merge: true });
+                }
 
-                const configDocId = configQuery.docs[0].id; 
-                const chatRef = db.collection("whatsapp_config").doc(configDocId)
-                    .collection("chats").doc(senderPhone);
-
-                // حفظ رسالة المستخدم وتحديث last_message للمستلم
+                // حفظ بيانات الدردشة العامة في الفرع الصحيح (الرومي أو التميز)
                 await chatRef.set({
-                    'last_message': messageText,
+                    'last_message': messageText || messageType,
                     'timestamp': admin.firestore.FieldValue.serverTimestamp(),
                     'sender_phone': senderPhone,
-                    'sender_name': (contact && contact.profile) ? contact.profile.name : "Unknown"
+                    'sender_name': senderName
                 }, { merge: true });
 
                 await chatRef.collection("messages").doc(message.id).set({
@@ -157,17 +171,17 @@ exports.whatsappWebhook = onRequest({
                     'timestamp': admin.firestore.FieldValue.serverTimestamp(),
                 });
 
-                // --- منطق إرسال النتائج تلقائياً وتحديث "لاست مسج" ---
+                // --- 4. إرسال النتائج والقالب الإضافي ---
                 if (resultNumber !== "") {
-                    let targetCollection = "";
-                    if (incomingPhoneNumberId === "1151556284697196") targetCollection = "alroomi";
-                    else if (incomingPhoneNumberId === "1114284988426114") targetCollection = "altohami";
+                    const targetCollection = configData.target_collection;
 
-                    if (targetCollection !== "") {
+                    if (targetCollection) {
                         const careDoc = await db.collection(targetCollection).doc(resultNumber).get();
-                        if (careDoc.exists) {
+
+                        if (careDoc.exists && careDoc.data().result_url) {
                             const data = careDoc.data();
-                            if (data.result_url) {
+                            try {
+                                // إرسال ملف النتيجة (يخرج من نفس الرقم الذي استقبل الرسالة)
                                 const fbResponse = await axios.post(
                                     `https://graph.facebook.com/v21.0/${incomingPhoneNumberId}/messages`,
                                     {
@@ -176,27 +190,61 @@ exports.whatsappWebhook = onRequest({
                                         "type": "document",
                                         "document": { "link": data.result_url, "filename": `Result_${resultNumber}.pdf` }
                                     },
-                                    { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } }
+                                    { headers: { 'Authorization': `Bearer ${currentToken}` } }
                                 );
 
-                                const botMsgId = fbResponse.data.messages[0].id;
-                                const botMsgBody = `تم إرسال ملف النتائج رقم: ${resultNumber}`;
+                                // إرسال قالب العرض (فقط إذا كان الرقم هو التميز)
+                                if (incomingPhoneNumberId === AL_TAMAYOZ_PHONE_ID) {
+                                    const templateResp = await axios.post(
+                                        `https://graph.facebook.com/v21.0/${incomingPhoneNumberId}/messages`,
+                                        {
+                                            "messaging_product": "whatsapp",
+                                            "to": senderPhone,
+                                            "type": "template",
+                                            "template": { "name": "offer_1", "language": { "code": "ar" } }
+                                        },
+                                        { headers: { 'Authorization': `Bearer ${currentToken}` } }
+                                    );
 
-                                // 1. حفظ في مجموعة الرسائل
-                                await chatRef.collection("messages").doc(botMsgId).set({
-                                    'message_body': botMsgBody,
-                                    'type': 'sent', 
-                                    'status': 'sent', 
-                                    'message_id': botMsgId,
-                                    'timestamp': admin.firestore.FieldValue.serverTimestamp(), 
-                                    'is_bot': true 
-                                });
+                                    const templateId = templateResp.data.messages[0].id;
+                                    const offerLogText = "🎁 عرض: offer_1";
 
-                                // 2. تحديث المستند الرئيسي (لاست مسج)
-                                await chatRef.update({
-                                    'last_message': botMsgBody,
-                                    'timestamp': admin.firestore.FieldValue.serverTimestamp()
-                                });
+                                    await chatRef.collection("messages").doc(templateId).set({
+                                        'message_body': offerLogText,
+                                        'type': 'sent',
+                                        'status': 'sent',
+                                        'message_id': templateId,
+                                        'timestamp': admin.firestore.FieldValue.serverTimestamp(),
+                                        'is_bot': true
+                                    });
+
+                                    await chatRef.update({
+                                        'last_message': offerLogText,
+                                        'timestamp': admin.firestore.FieldValue.serverTimestamp()
+                                    });
+                                }
+
+                                // رسالة تأكيد للرقم الآخر (مثل الرومي)
+                                if (incomingPhoneNumberId !== AL_TAMAYOZ_PHONE_ID) {
+                                    const botMsgId = fbResponse.data.messages[0].id;
+                                    const botMsgBody = `تم إرسال ملف النتائج رقم: ${resultNumber}`;
+
+                                    await chatRef.collection("messages").doc(botMsgId).set({
+                                        'message_body': botMsgBody,
+                                        'type': 'sent',
+                                        'message_id': botMsgId,
+                                        'timestamp': admin.firestore.FieldValue.serverTimestamp(),
+                                        'is_bot': true
+                                    });
+
+                                    await chatRef.update({
+                                        'last_message': botMsgBody,
+                                        'timestamp': admin.firestore.FieldValue.serverTimestamp()
+                                    });
+                                }
+
+                            } catch (err) {
+                                console.error("❌ Send Error:", err.response?.data || err.message);
                             }
                         }
                     }
@@ -204,8 +252,8 @@ exports.whatsappWebhook = onRequest({
             }
             return res.sendStatus(200);
         } catch (error) {
-            console.error("❌ Error:", error.message);
-            return res.sendStatus(200); 
+            console.error("❌ Global Error:", error.message);
+            return res.sendStatus(200);
         }
     }
     res.sendStatus(405);
