@@ -114,6 +114,8 @@ exports.whatsappWebhook = onRequest({
                 let mediaUrl = null;
                 let messageType = message.type;
                 let isOfferRegistration = false;
+                let shiftReportType = null; // "sales" | "sold_items"
+                let shiftNumber = null;
 
                 // تحليل الرسالة
                 if (message.type === "text") {
@@ -122,15 +124,37 @@ exports.whatsappWebhook = onRequest({
                 }
                 else if (message.type === "interactive" && message.interactive.type === "button_reply") {
                     messageText = message.interactive.button_reply.title.trim();
+                    console.log("🔘 interactive button_reply title:", messageText);
+                    console.log("🔘 interactive button_reply id:", message.interactive.button_reply.id);
                     if (messageText.includes("سارع بالتسجيل")) isOfferRegistration = true;
+                    if (messageText.includes("تقرير مبيعات اليوم")) shiftReportType = "sales";
+                    else if (messageText.includes("تقرير الاصناف المباعه")) shiftReportType = "sold_items";
+                    try {
+                        const payloadData = JSON.parse(message.interactive.button_reply.id);
+                        console.log("🔘 interactive parsed payload:", payloadData);
+                        if (payloadData.shift_id) shiftNumber = String(payloadData.shift_id);
+                    } catch (e) {
+                        console.log("🔘 interactive button_reply id is not JSON:", e.message);
+                    }
                 }
                 else if (message.type === "button") {
                     messageText = message.button.text.trim();
+                    console.log("🔘 button text:", messageText);
+                    console.log("🔘 button payload raw:", message.button.payload);
                     if (messageText.includes("سارع بالتسجيل")) isOfferRegistration = true;
+                    if (messageText.includes("تقرير مبيعات اليوم")) shiftReportType = "sales";
+                    else if (messageText.includes("تقرير الاصناف المباعه")) shiftReportType = "sold_items";
                     try {
                         const payloadData = JSON.parse(message.button.payload);
+                        console.log("🔘 button parsed payload:", payloadData);
                         if (payloadData.visitId) resultNumber = String(payloadData.visitId);
-                    } catch (e) {}
+                        if (payloadData.shift_id) shiftNumber = String(payloadData.shift_id);
+                    } catch (e) {
+                        const raw = message.button.payload;
+                        const match = /(\d+)$/.exec(raw);
+                        if (match) shiftNumber = match[1];
+                        console.log("🔘 button payload plain string:", raw, "→ shiftNumber:", shiftNumber);
+                    }
                 }
                 else if (message.type === "image") {
                     messageText = "📷 صورة";
@@ -247,6 +271,62 @@ exports.whatsappWebhook = onRequest({
                                 console.error("❌ Send Error:", err.response?.data || err.message);
                             }
                         }
+                    }
+                }
+                // --- 5. إرسال تقارير الوردية ---
+                console.log("📊 shiftReportType:", shiftReportType, "| shiftNumber:", shiftNumber);
+                if (shiftReportType && shiftNumber) {
+                    try {
+                        const shiftDoc = await db.collection("pharmacies").doc("lifcare")
+                            .collection("shifts").doc(shiftNumber).get();
+                        console.log("📊 shiftDoc exists:", shiftDoc.exists);
+
+                        if (shiftDoc.exists) {
+                            const shiftData = shiftDoc.data();
+                            const pdfField = shiftReportType === "sales" ? "pdf_url" : "sold_items_pdf_url";
+                            const pdfUrl = shiftData[pdfField];
+
+                            if (pdfUrl) {
+                                const reportName = shiftReportType === "sales"
+                                    ? `sales_shift_${shiftNumber}.pdf`
+                                    : `sold_items_shift_${shiftNumber}.pdf`;
+
+                                const fbResponse = await axios.post(
+                                    `https://graph.facebook.com/v21.0/${incomingPhoneNumberId}/messages`,
+                                    {
+                                        "messaging_product": "whatsapp",
+                                        "to": senderPhone,
+                                        "type": "document",
+                                        "document": { "link": pdfUrl, "filename": reportName }
+                                    },
+                                    { headers: { 'Authorization': `Bearer ${currentToken}` } }
+                                );
+
+                                const botMsgId = fbResponse.data.messages[0].id;
+                                const botMsgBody = shiftReportType === "sales"
+                                    ? `📊 تم إرسال تقرير مبيعات الوردية رقم: ${shiftNumber}`
+                                    : `📋 تم إرسال تقرير الأصناف المباعة للوردية رقم: ${shiftNumber}`;
+
+                                await chatRef.collection("messages").doc(botMsgId).set({
+                                    'message_body': botMsgBody,
+                                    'type': 'sent',
+                                    'message_id': botMsgId,
+                                    'timestamp': admin.firestore.FieldValue.serverTimestamp(),
+                                    'is_bot': true
+                                });
+
+                                await chatRef.update({
+                                    'last_message': botMsgBody,
+                                    'timestamp': admin.firestore.FieldValue.serverTimestamp()
+                                });
+                            } else {
+                                console.log(`⚠️ Field ${pdfField} not found in shift ${shiftNumber}`);
+                            }
+                        } else {
+                            console.log(`⚠️ Shift document ${shiftNumber} not found`);
+                        }
+                    } catch (err) {
+                        console.error("❌ Shift Report Error:", err.response?.data || err.message);
                     }
                 }
             }

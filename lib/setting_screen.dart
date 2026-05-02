@@ -17,6 +17,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController phoneController = TextEditingController();
   final TextEditingController wabaController = TextEditingController();
 
+  String targetCollection = '';
+
   bool isLoading = true;
 
   final Color primaryColor = const Color.fromARGB(255, 3, 145, 5);
@@ -59,12 +61,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final savedToken = prefs.getString('TOKEN');
     final savedPhone = prefs.getString('PHONE_NUMBER_ID');
     final savedWaba = prefs.getString('WABA_ID');
+    final savedTarget = prefs.getString('TARGET_COLLECTION');
 
     setState(() {
       selectedConfigId = savedConfigId;
       tokenController.text = savedToken ?? '';
       phoneController.text = savedPhone ?? '';
       wabaController.text = savedWaba ?? '';
+      targetCollection = savedTarget ?? '';
     });
   }
 
@@ -75,6 +79,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       tokenController.text = config.token;
       phoneController.text = config.phoneNumberId;
       wabaController.text = config.wabaId;
+      targetCollection = config.targetCollection; 
     });
   }
 
@@ -82,15 +87,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
 
     await prefs.setString('selectedConfigId', selectedConfigId ?? '');
-
     await prefs.setString('TOKEN', tokenController.text);
     await prefs.setString('PHONE_NUMBER_ID', phoneController.text);
     await prefs.setString('WABA_ID', wabaController.text);
+    await prefs.setString('TARGET_COLLECTION', targetCollection); 
 
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("تم حفظ الإعدادات بنجاح")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("تم حفظ الإعدادات بنجاح")),
+      );
     }
   }
 
@@ -225,6 +230,7 @@ class WhatsAppConfig {
   final String token;
   final String phoneNumberId;
   final String wabaId;
+  final String targetCollection;
 
   WhatsAppConfig({
     required this.id,
@@ -232,6 +238,7 @@ class WhatsAppConfig {
     required this.token,
     required this.phoneNumberId,
     required this.wabaId,
+    required this.targetCollection,
   });
 
   factory WhatsAppConfig.fromFirestore(
@@ -244,6 +251,7 @@ class WhatsAppConfig {
       token: data['TOKEN']?.toString() ?? '',
       phoneNumberId: data['PHONE_NUMBER_ID']?.toString() ?? '',
       wabaId: data['WABA_ID']?.toString() ?? '',
+      targetCollection: data['target_collection']?.toString() ?? '',
     );
   }
 }

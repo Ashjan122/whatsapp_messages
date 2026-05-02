@@ -1,12 +1,15 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart'; // مكتبة الصوت
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' as intl;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 
 class ChatDetailScreen extends StatefulWidget {
   final String phoneNumber;
@@ -30,6 +33,9 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   String? phoneNumberId;
   String? wabaId;
   bool isLoading = true;
+  String? targetCollection;
+  Map<String, dynamic>? patientData;
+  bool isSearchingResult = true;
 
   @override
   void initState() {
@@ -50,14 +56,42 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       accessToken = prefs.getString('TOKEN');
       phoneNumberId = prefs.getString('PHONE_NUMBER_ID');
       wabaId = prefs.getString('WABA_ID');
+      targetCollection = prefs.getString('TARGET_COLLECTION');
       isLoading = false;
     });
+    await searchPatientResult();
+  }
+
+  Future<void> searchPatientResult() async {
+    if (targetCollection == null) {
+      setState(() => isSearchingResult = false);
+      return;
+    }
+
+    try {
+      final snapshot =
+          await FirebaseFirestore.instance
+              .collection(targetCollection!)
+              .where('patient_phone', isEqualTo: widget.phoneNumber)
+              .limit(1)
+              .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        setState(() {
+          patientData = snapshot.docs.first.data();
+        });
+      }
+    } catch (e) {
+      print("❌ Error searching result: $e");
+    }
+
+    setState(() => isSearchingResult = false);
   }
 
   String _formatTime(Timestamp? timestamp) {
     if (timestamp == null) return "...";
     DateTime date = timestamp.toDate();
-    return DateFormat('h:mm a').format(date);
+    return intl.DateFormat('h:mm a').format(date);
   }
 
   String _getDividerDate(Timestamp? timestamp) {
@@ -70,7 +104,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
 
     if (messageDate == today) return "اليوم";
     if (messageDate == yesterday) return "أمس";
-    return DateFormat('yyyy/MM/dd', 'ar').format(date);
+    return intl.DateFormat('yyyy/MM/dd', 'ar').format(date);
   }
 
   Widget _buildStatusIcon(String? status) {
@@ -372,6 +406,132 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     );
   }
 
+  Future<List<Map<String, dynamic>>> _getAllResults() async {
+    if (targetCollection == null) return [];
+
+    final snapshot =
+        await FirebaseFirestore.instance
+            .collection(targetCollection!)
+            .where('patient_phone', isEqualTo: widget.phoneNumber)
+            .orderBy('created_at', descending: true)
+            .get();
+
+    return snapshot.docs.map((e) => e.data()).toList();
+  }
+
+  void _showResultsDialog() async {
+    final phone = widget.phoneNumber;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return const Center(child: CircularProgressIndicator());
+      },
+    );
+
+    final results = await _getAllResults();
+
+    Navigator.pop(context);
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: Text(
+              "نتائج $phone",
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child:
+                  results.isEmpty
+                      ? const Text(
+                        "لا توجد نتائج لهذا الرقم",
+                        textAlign: TextAlign.center,
+                      )
+                      : ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: results.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        itemBuilder: (context, index) {
+                          final item = results[index];
+
+                          final name = item['patient_name'] ?? "بدون اسم";
+                          final url = item['result_url'];
+                          final createdAt = item['created_at'] as Timestamp?;
+
+                          String dateText = "";
+                          if (createdAt != null) {
+                            dateText = intl.DateFormat(
+                              'yyyy/MM/dd – hh:mm a',
+                            ).format(createdAt.toDate());
+                          }
+
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: Colors.grey[100],
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              title: Text(
+                                name,
+                                textAlign: TextAlign.right,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              subtitle: Text(
+                                dateText,
+                                textAlign: TextAlign.right,
+                                style: TextStyle(
+                                  color: Colors.grey[700],
+                                  fontSize: 12,
+                                ),
+                              ),
+                              trailing: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF039105),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                                child: const Text(
+                                  "عرض",
+                                  style: TextStyle(color: Colors.white),
+                                ),
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => ResultPdfScreen(url: url),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> sendTemplate(String templateName, String langCode) async {
     if (accessToken == null || phoneNumberId == null) return;
     setState(() => isLoading = true);
@@ -466,6 +626,15 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         backgroundColor: Colors.white,
         elevation: 1,
         actions: [
+          // 👇 زر النتيجة (لو موجودة)
+          if (patientData != null && patientData!['result_url'] != null)
+            IconButton(
+              icon: const Icon(Icons.picture_as_pdf, color: Colors.black),
+              tooltip: patientData!['patient_name'] ?? "عرض النتيجة",
+              onPressed: _showResultsDialog,
+            ),
+
+          // القائمة الأساسية
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'save_contact') _showSaveContactDialog();
@@ -819,5 +988,77 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
 
   String _formatDuration(Duration d) {
     return "${d.inMinutes.remainder(60)}:${d.inSeconds.remainder(60).toString().padLeft(2, '0')}";
+  }
+}
+
+class ResultPdfScreen extends StatefulWidget {
+  final String url;
+
+  const ResultPdfScreen({super.key, required this.url});
+
+  @override
+  State<ResultPdfScreen> createState() => _ResultPdfScreenState();
+}
+
+class _ResultPdfScreenState extends State<ResultPdfScreen> {
+  bool isLoading = true;
+  String? localPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _downloadPdf();
+  }
+
+  Future<void> _downloadPdf() async {
+    try {
+      final response = await http.get(Uri.parse(widget.url));
+
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/result.pdf');
+
+      await file.writeAsBytes(response.bodyBytes);
+
+      setState(() {
+        localPath = file.path;
+        isLoading = false;
+      });
+    } catch (e) {
+      setState(() => isLoading = false);
+    }
+  }
+
+  Future<void> _downloadToDevice() async {
+    try {
+      final response = await http.get(Uri.parse(widget.url));
+
+      final dir = await getExternalStorageDirectory();
+      final file = File(
+        '${dir!.path}/result_${DateTime.now().millisecondsSinceEpoch}.pdf',
+      );
+
+      await file.writeAsBytes(response.bodyBytes);
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("تم تحميل الملف")));
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("فشل التحميل")));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("عرض النتيجة"), centerTitle: true),
+      body:
+          isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : localPath == null
+              ? const Center(child: Text("فشل تحميل الملف"))
+              : SfPdfViewer.file(File(localPath!)),
+    );
   }
 }

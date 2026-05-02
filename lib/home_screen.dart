@@ -34,7 +34,7 @@ class _HomeScreenState extends State<HomeScreen> {
     String? savedId = prefs.getString('selectedConfigId');
 
     if (savedId == null) {
-      savedId = "rolaco";
+      savedId = "lifecare";
       await prefs.setString('selectedConfigId', savedId);
     }
 
@@ -45,6 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<Widget> get _pages => [
     ConversationsScreen(key: _convKey),
+    const ResultsPage(),
     const StatsPage(),
     const ProfileScreen(),
   ];
@@ -87,7 +88,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          /*actions: [
+          actions: [
             IconButton(
               icon: const Icon(
                 Icons.settings,
@@ -105,7 +106,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 });
               },
             ),
-          ],*/
+          ],
         ),
         body: SafeArea(child: _pages[_currentIndex]),
         bottomNavigationBar: BottomNavigationBar(
@@ -121,7 +122,12 @@ class _HomeScreenState extends State<HomeScreen> {
           items: const [
             BottomNavigationBarItem(icon: Icon(Icons.chat), label: 'دردشات'),
             BottomNavigationBarItem(
+              icon: Icon(Icons.science),
+              label: 'النتائج',
+            ),
+            BottomNavigationBarItem(
               icon: Icon(Icons.bar_chart),
+
               label: 'احصائيات',
             ),
             BottomNavigationBarItem(
@@ -160,7 +166,7 @@ class ConversationsScreenState extends State<ConversationsScreen> {
     String? savedId = prefs.getString('selectedConfigId');
 
     if (savedId == null) {
-      savedId = "rolaco";
+      savedId = "lifecare";
       await prefs.setString('selectedConfigId', savedId);
     }
 
@@ -411,6 +417,220 @@ class ConversationsScreenState extends State<ConversationsScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class ResultsPage extends StatefulWidget {
+  const ResultsPage({super.key});
+
+  @override
+  State<ResultsPage> createState() => _ResultsPageState();
+}
+
+class _ResultsPageState extends State<ResultsPage> {
+  String? targetCollection;
+  bool isLoading = true;
+
+  String searchQuery = "";
+
+  @override
+  void initState() {
+    super.initState();
+    loadTarget();
+  }
+
+  Future<void> loadTarget() async {
+    final prefs = await SharedPreferences.getInstance();
+    targetCollection = prefs.getString('TARGET_COLLECTION');
+
+    setState(() {
+      isLoading = false;
+    });
+  }
+
+  Future<void> openPdf(String url) async {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ResultPdfScreen(url: url)),
+    );
+  }
+
+  bool matchesSearch(Map<String, dynamic> data, String docId) {
+    final name = (data['patient_name'] ?? "").toString().toLowerCase();
+    final phone = (data['patient_phone'] ?? "").toString().toLowerCase();
+    final id = docId.toLowerCase();
+    final q = searchQuery.toLowerCase();
+
+    return name.contains(q) || phone.contains(q) || id.contains(q);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        backgroundColor: Colors.grey[300],
+        body:
+            isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : targetCollection == null
+                ? const Center(child: Text("لا يوجد كولكشن محدد"))
+                : Column(
+                  children: [
+                    // 🔍 SEARCH BAR
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: TextField(
+                        onChanged: (value) {
+                          setState(() {
+                            searchQuery = value;
+                          });
+                        },
+                        decoration: InputDecoration(
+                          hintText: "بحث باسم المريض او رقم الهاتف او ID ...",
+                          prefixIcon: const Icon(Icons.search),
+                          filled: true,
+                          fillColor: Colors.white,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    Expanded(
+                      child: StreamBuilder<QuerySnapshot>(
+                        stream:
+                            FirebaseFirestore.instance
+                                .collection(targetCollection!)
+                                .orderBy('created_at', descending: true)
+                                .snapshots(),
+                        builder: (context, snapshot) {
+                          if (!snapshot.hasData) {
+                            return const Center(
+                              child: CircularProgressIndicator(),
+                            );
+                          }
+
+                          final docs = snapshot.data!.docs;
+
+                          final filteredDocs =
+                              docs.where((doc) {
+                                return matchesSearch(
+                                  doc.data() as Map<String, dynamic>,
+                                  doc.id,
+                                );
+                              }).toList();
+
+                          if (filteredDocs.isEmpty) {
+                            return const Center(child: Text("لا توجد نتائج"));
+                          }
+
+                          return ListView.builder(
+                            padding: const EdgeInsets.all(12),
+                            itemCount: filteredDocs.length,
+                            itemBuilder: (context, index) {
+                              final data =
+                                  filteredDocs[index].data()
+                                      as Map<String, dynamic>;
+
+                              final name = data['patient_name'] ?? "بدون اسم";
+                              final phone = data['patient_phone'] ?? "";
+                              final url = data['result_url'];
+
+                              final createdAt =
+                                  data['created_at'] as Timestamp?;
+
+                              String date = "";
+                              if (createdAt != null) {
+                                date = intl.DateFormat(
+                                  'yyyy/MM/dd – hh:mm a',
+                                ).format(createdAt.toDate());
+                              }
+
+                              return Card(
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                margin: const EdgeInsets.symmetric(
+                                  vertical: 3,
+                                ), // 👈 تقليل المسافة بين الكروت
+                                child: ListTile(
+                                  dense: true, // 👈 يقلل ارتفاع الكارت
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+
+                                  title: Text(
+                                    name,
+                                    textAlign: TextAlign.right,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14, // 👈 تصغير الخط
+                                    ),
+                                  ),
+
+                                  subtitle: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const SizedBox(height: 4),
+
+                                      Text(
+                                        phone,
+                                        textAlign: TextAlign.right,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.black87,
+                                        ),
+                                      ),
+
+                                      const SizedBox(height: 2),
+
+                                      Text(
+                                        date,
+                                        textAlign: TextAlign.right,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.grey[600],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+
+                                  trailing: SizedBox(
+                                    height: 32, // 👈 زر أصغر
+                                    child: ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: const Color(
+                                          0xFF039105,
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                        ),
+                                        textStyle: const TextStyle(
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      onPressed: () => openPdf(url),
+                                      child: const Text(
+                                        "عرض",
+                                        style: TextStyle(color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
       ),
     );
   }
