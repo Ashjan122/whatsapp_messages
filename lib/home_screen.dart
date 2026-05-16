@@ -1,9 +1,11 @@
 import 'dart:convert';
 
+import 'package:app_badge_plus/app_badge_plus.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart' as intl;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:whatsapp_messages/chat_details_screen.dart';
 import 'package:whatsapp_messages/phone_contact_screen.dart';
@@ -34,7 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
     String? savedId = prefs.getString('selectedConfigId');
 
     if (savedId == null) {
-      savedId = "lifecare";
+      savedId = "altohami";
       await prefs.setString('selectedConfigId', savedId);
     }
 
@@ -158,6 +160,15 @@ class ConversationsScreenState extends State<ConversationsScreen> {
   void initState() {
     super.initState();
     loadSelectedConfig();
+    _initBadge();
+  }
+
+  Future<void> _initBadge() async {
+    await Permission.notification.request();
+    final supported = await AppBadgePlus.isSupported();
+    if (!supported) {
+      print("⚠️ App badge not supported on this device");
+    }
   }
 
   Future<void> loadSelectedConfig() async {
@@ -166,7 +177,7 @@ class ConversationsScreenState extends State<ConversationsScreen> {
     String? savedId = prefs.getString('selectedConfigId');
 
     if (savedId == null) {
-      savedId = "lifecare";
+      savedId = "altohami";
       await prefs.setString('selectedConfigId', savedId);
     }
 
@@ -177,6 +188,21 @@ class ConversationsScreenState extends State<ConversationsScreen> {
 
     print("🔄 تم تحديث الحساب المختار إلى: $selectedConfigId");
   }
+
+  Widget _buildLoader() => const Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CircularProgressIndicator(color: Color(0xFF039105), strokeWidth: 3),
+        SizedBox(height: 14),
+        Text(
+          "جاري التحميل...",
+          style: TextStyle(color: Colors.grey, fontSize: 14),
+        ),
+      ],
+    ),
+  );
+
   // ... داخل كلاس ConversationsScreenState
 
   String formatChatTimestamp(Timestamp? timestamp) {
@@ -261,7 +287,7 @@ class ConversationsScreenState extends State<ConversationsScreen> {
             Expanded(
               child:
                   isLoadingConfig
-                      ? const Center(child: CircularProgressIndicator())
+                      ? _buildLoader()
                       : selectedConfigId == null
                       ? const Center(
                         child: Text("الرجاء اختيار حساب من الإعدادات"),
@@ -277,9 +303,7 @@ class ConversationsScreenState extends State<ConversationsScreen> {
                         builder: (context, snapshot) {
                           if (snapshot.connectionState ==
                               ConnectionState.waiting) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
+                            return _buildLoader();
                           }
 
                           if (!snapshot.hasData ||
@@ -290,6 +314,19 @@ class ConversationsScreenState extends State<ConversationsScreen> {
                           }
 
                           final chatDocs = snapshot.data!.docs;
+
+                          // تحديث بادج أيقونة التطبيق
+                          final totalUnread = chatDocs.fold<int>(0, (sum, doc) {
+                            final data = doc.data() as Map<String, dynamic>;
+                            return sum + ((data['unread_count'] ?? 0) as num).toInt();
+                          });
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (totalUnread > 0) {
+                              AppBadgePlus.updateBadge(totalUnread);
+                            } else {
+                              AppBadgePlus.updateBadge(0);
+                            }
+                          });
 
                           return ListView.builder(
                             itemCount: chatDocs.length,
@@ -309,6 +346,9 @@ class ConversationsScreenState extends State<ConversationsScreen> {
                                   chatData['sender_name'] ??
                                   ''; // من واتساب (webhook)
                               String lastMsg = chatData['last_message'] ?? '';
+                              int unreadCount =
+                                  ((chatData['unread_count'] ?? 0) as num)
+                                      .toInt();
 
                               return Column(
                                 children: [
@@ -380,11 +420,31 @@ class ConversationsScreenState extends State<ConversationsScreen> {
                                         ),
                                       ],
                                     ),
-                                    trailing: const Icon(
-                                      Icons.arrow_forward_ios,
-                                      size: 14,
-                                      color: Colors.grey,
-                                    ),
+                                    trailing:
+                                        unreadCount > 0
+                                            ? Container(
+                                              padding: const EdgeInsets.all(6),
+                                              decoration: const BoxDecoration(
+                                                color: Color.fromARGB(
+                                                  255,
+                                                  3,
+                                                  145,
+                                                  5,
+                                                ),
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: Text(
+                                                unreadCount > 99
+                                                    ? '99+'
+                                                    : '$unreadCount',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            )
+                                            : null,
                                     onTap: () {
                                       Navigator.push(
                                         context,
@@ -443,9 +503,16 @@ class _ResultsPageState extends State<ResultsPage> {
 
   Future<void> loadTarget() async {
     final prefs = await SharedPreferences.getInstance();
-    targetCollection = prefs.getString('TARGET_COLLECTION');
+
+    String? savedTarget = prefs.getString('TARGET_COLLECTION');
+
+    if (savedTarget == null) {
+      savedTarget = "altohami"; // 👈 القيمة الافتراضية
+      await prefs.setString('TARGET_COLLECTION', savedTarget);
+    }
 
     setState(() {
+      targetCollection = savedTarget;
       isLoading = false;
     });
   }
@@ -456,6 +523,20 @@ class _ResultsPageState extends State<ResultsPage> {
       MaterialPageRoute(builder: (_) => ResultPdfScreen(url: url)),
     );
   }
+
+  Widget _buildLoader() => const Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CircularProgressIndicator(color: Color(0xFF039105), strokeWidth: 3),
+        SizedBox(height: 14),
+        Text(
+          "جاري التحميل...",
+          style: TextStyle(color: Colors.grey, fontSize: 14),
+        ),
+      ],
+    ),
+  );
 
   bool matchesSearch(Map<String, dynamic> data, String docId) {
     final name = (data['patient_name'] ?? "").toString().toLowerCase();
@@ -474,7 +555,7 @@ class _ResultsPageState extends State<ResultsPage> {
         backgroundColor: Colors.grey[300],
         body:
             isLoading
-                ? const Center(child: CircularProgressIndicator())
+                ? _buildLoader()
                 : targetCollection == null
                 ? const Center(child: Text("لا يوجد كولكشن محدد"))
                 : Column(
@@ -509,9 +590,7 @@ class _ResultsPageState extends State<ResultsPage> {
                                 .snapshots(),
                         builder: (context, snapshot) {
                           if (!snapshot.hasData) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
+                            return _buildLoader();
                           }
 
                           final docs = snapshot.data!.docs;
@@ -528,103 +607,142 @@ class _ResultsPageState extends State<ResultsPage> {
                             return const Center(child: Text("لا توجد نتائج"));
                           }
 
-                          return ListView.builder(
-                            padding: const EdgeInsets.all(12),
-                            itemCount: filteredDocs.length,
-                            itemBuilder: (context, index) {
-                              final data =
-                                  filteredDocs[index].data()
-                                      as Map<String, dynamic>;
-
-                              final name = data['patient_name'] ?? "بدون اسم";
-                              final phone = data['patient_phone'] ?? "";
-                              final url = data['result_url'];
-
-                              final createdAt =
-                                  data['created_at'] as Timestamp?;
-
-                              String date = "";
-                              if (createdAt != null) {
-                                date = intl.DateFormat(
-                                  'yyyy/MM/dd – hh:mm a',
-                                ).format(createdAt.toDate());
-                              }
-
-                              return Card(
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10),
+                          return Column(
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 4,
                                 ),
-                                margin: const EdgeInsets.symmetric(
-                                  vertical: 3,
-                                ), // 👈 تقليل المسافة بين الكروت
-                                child: ListTile(
-                                  dense: true, // 👈 يقلل ارتفاع الكارت
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 6,
-                                  ),
-
-                                  title: Text(
-                                    name,
-                                    textAlign: TextAlign.right,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14, // 👈 تصغير الخط
-                                    ),
-                                  ),
-
-                                  subtitle: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const SizedBox(height: 4),
-
-                                      Text(
-                                        phone,
-                                        textAlign: TextAlign.right,
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF039105),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        "الإجمالي: ${filteredDocs.length}",
                                         style: const TextStyle(
-                                          fontSize: 12,
-                                          color: Colors.black87,
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
                                         ),
-                                      ),
-
-                                      const SizedBox(height: 2),
-
-                                      Text(
-                                        date,
-                                        textAlign: TextAlign.right,
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          color: Colors.grey[600],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-
-                                  trailing: SizedBox(
-                                    height: 32, // 👈 زر أصغر
-                                    child: ElevatedButton(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: const Color(
-                                          0xFF039105,
-                                        ),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                        ),
-                                        textStyle: const TextStyle(
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                      onPressed: () => openPdf(url),
-                                      child: const Text(
-                                        "عرض",
-                                        style: TextStyle(color: Colors.white),
                                       ),
                                     ),
-                                  ),
+                                  ],
                                 ),
-                              );
-                            },
+                              ),
+                              Expanded(
+                                child: ListView.builder(
+                                  padding: const EdgeInsets.all(12),
+                                  itemCount: filteredDocs.length,
+                                  itemBuilder: (context, index) {
+                                    final data =
+                                        filteredDocs[index].data()
+                                            as Map<String, dynamic>;
+
+                                    final name =
+                                        data['patient_name'] ?? "بدون اسم";
+                                    final phone = data['patient_phone'] ?? "";
+                                    final url = data['result_url'];
+
+                                    final createdAt =
+                                        data['created_at'] as Timestamp?;
+
+                                    String date = "";
+                                    if (createdAt != null) {
+                                      date = intl.DateFormat(
+                                        'yyyy/MM/dd – hh:mm a',
+                                      ).format(createdAt.toDate());
+                                    }
+
+                                    return Card(
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      margin: const EdgeInsets.symmetric(
+                                        vertical: 3,
+                                      ), // 👈 تقليل المسافة بين الكروت
+                                      child: ListTile(
+                                        dense: true, // 👈 يقلل ارتفاع الكارت
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 6,
+                                            ),
+
+                                        title: Text(
+                                          name,
+                                          textAlign: TextAlign.right,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14, // 👈 تصغير الخط
+                                          ),
+                                        ),
+
+                                        subtitle: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const SizedBox(height: 4),
+
+                                            Text(
+                                              phone,
+                                              textAlign: TextAlign.right,
+                                              style: const TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.black87,
+                                              ),
+                                            ),
+
+                                            const SizedBox(height: 2),
+
+                                            Text(
+                                              date,
+                                              textAlign: TextAlign.right,
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.grey[600],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+
+                                        trailing: SizedBox(
+                                          height: 32, // 👈 زر أصغر
+                                          child: ElevatedButton(
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: const Color(
+                                                0xFF039105,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                  ),
+                                              textStyle: const TextStyle(
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                            onPressed: () => openPdf(url),
+                                            child: const Text(
+                                              "عرض",
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
                           );
                         },
                       ),

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart' as intl;
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 
@@ -59,7 +60,97 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       targetCollection = prefs.getString('TARGET_COLLECTION');
       isLoading = false;
     });
-    await searchPatientResult();
+    await Future.wait([searchPatientResult(), _markChatAsRead()]);
+  }
+
+  Future<void> _markChatAsRead() async {
+    await FirebaseFirestore.instance
+        .collection('whatsapp_config')
+        .doc(widget.configId)
+        .collection('chats')
+        .doc(widget.phoneNumber)
+        .update({'unread_count': 0})
+        .catchError((_) {});
+  }
+
+  Future<String?> uploadMedia(File file) async {
+    if (accessToken == null || phoneNumberId == null) return null;
+
+    final uri = Uri.parse(
+      'https://graph.facebook.com/v18.0/$phoneNumberId/media',
+    );
+
+    var request = http.MultipartRequest('POST', uri);
+    request.headers['Authorization'] = 'Bearer $accessToken';
+
+    request.files.add(
+      await http.MultipartFile.fromPath(
+        'file',
+        file.path,
+        contentType: http.MediaType('application', 'pdf'),
+      ),
+    );
+
+    request.fields['messaging_product'] = 'whatsapp';
+
+    final response = await request.send();
+    final resBody = await http.Response.fromStream(response);
+
+    if (response.statusCode == 200) {
+      final data = json.decode(resBody.body);
+      return data['id']; // ده media_id
+    } else {
+      print(resBody.body);
+      return null;
+    }
+  }
+
+  Future<void> sendDocument(File file, String caption) async {
+    final mediaId = await uploadMedia(file);
+    if (mediaId == null) return;
+
+    final url = Uri.parse(
+      'https://graph.facebook.com/v18.0/$phoneNumberId/messages',
+    );
+
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode({
+        "messaging_product": "whatsapp",
+        "to": widget.phoneNumber,
+        "type": "document",
+        "document": {
+          "id": mediaId,
+          "caption": caption,
+          "filename": "result.pdf",
+        },
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      final messageId = data['messages'][0]['id'];
+
+      // ⭐ مهم: حفظ الرسالة في الشات
+      await _saveMessageToFirestore(
+        "تم إرسال النتيجة بنجاح",
+        "sent",
+        messageId,
+        "document",
+      );
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("تم إرسال النتيجة بنجاح")));
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("فشل إرسال النتيجة")));
+    }
   }
 
   Future<void> searchPatientResult() async {
@@ -254,12 +345,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
           messageText,
         );
       } else {
-        // يمكن هنا تحديث الحالة إلى "failed" إذا فشل الإرسال
-        await _updateMessageStatus(tempMessageId, 'failed');
+        await _updateMessageStatus(
+          tempMessageId,
+          'failed',
+          errorReason: _parseErrorReason(response.body),
+        );
       }
     } catch (e) {
       print("Error sending message: $e");
-      await _updateMessageStatus(tempMessageId, 'failed');
+      await _updateMessageStatus(
+        tempMessageId,
+        'failed',
+        errorReason: 'لا يوجد اتصال بالإنترنت',
+      );
     }
   }
 
@@ -318,7 +416,13 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
   }
 
   // لتحديث الحالة فقط (في حال الفشل مثلاً)
-  Future<void> _updateMessageStatus(String id, String status) async {
+  Future<void> _updateMessageStatus(
+    String id,
+    String status, {
+    String? errorReason,
+  }) async {
+    final Map<String, dynamic> updates = {'status': status};
+    if (errorReason != null) updates['error_reason'] = errorReason;
     await FirebaseFirestore.instance
         .collection('whatsapp_config')
         .doc(widget.configId)
@@ -326,7 +430,19 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
         .doc(widget.phoneNumber)
         .collection('messages')
         .doc(id)
-        .update({'status': status});
+        .update(updates);
+  }
+
+  String _parseErrorReason(String responseBody) {
+    try {
+      final data = json.decode(responseBody);
+      final error = data['error'];
+      if (error != null) {
+        final code = error['code'];
+        if (code == 131047) return 'انتهت نافذة الـ 24 ساعة';
+      }
+    } catch (_) {}
+    return 'فشل الإرسال';
   }
 
   Future<void> _updateDisplayName(String newName) async {
@@ -500,26 +616,78 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                                   fontSize: 12,
                                 ),
                               ),
-                              trailing: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF039105),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
-                                child: const Text(
-                                  "عرض",
-                                  style: TextStyle(color: Colors.white),
-                                ),
-                                onPressed: () {
-                                  Navigator.pop(context);
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => ResultPdfScreen(url: url),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // 👁 عرض (صغير)
+                                  Container(
+                                    width: 32,
+                                    height: 32,
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey.shade200,
+                                      borderRadius: BorderRadius.circular(8),
                                     ),
-                                  );
-                                },
+                                    child: IconButton(
+                                      padding: EdgeInsets.zero,
+                                      icon: const Icon(
+                                        Icons.visibility,
+                                        color: Colors.black87,
+                                        size: 18,
+                                      ),
+                                      onPressed: () {
+                                        Navigator.pop(context);
+                                        Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder:
+                                                (_) =>
+                                                    ResultPdfScreen(url: url),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+
+                                  const SizedBox(width: 6),
+
+                                  // 📤 إرسال (صغير)
+                                  Container(
+                                    width: 32,
+                                    height: 32,
+                                    decoration: BoxDecoration(
+                                      color: const Color(
+                                        0xFF039105,
+                                      ).withOpacity(0.12),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: IconButton(
+                                      padding: EdgeInsets.zero,
+                                      icon: const Icon(
+                                        Icons.send_rounded,
+                                        color: Color(0xFF039105),
+                                        size: 18,
+                                      ),
+                                      onPressed: () async {
+                                        Navigator.pop(context);
+
+                                        final response = await http.get(
+                                          Uri.parse(url),
+                                        );
+                                        final dir =
+                                            await getTemporaryDirectory();
+                                        final file = File(
+                                          '${dir.path}/result.pdf',
+                                        );
+
+                                        await file.writeAsBytes(
+                                          response.bodyBytes,
+                                        );
+
+                                        await sendDocument(file, " result pdf");
+                                      },
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           );
@@ -768,6 +936,17 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                                       ],
                                     ],
                                   ),
+                                  if (data['status'] == 'failed' &&
+                                      data['error_reason'] != null) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      data['error_reason'],
+                                      style: const TextStyle(
+                                        fontSize: 9,
+                                        color: Colors.red,
+                                      ),
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
@@ -808,7 +987,30 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                         .map(
                           (temp) => PopupMenuItem(
                             value: temp,
-                            child: Text(temp['name']),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  temp['name'],
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                if (temp['body'] != null &&
+                                    (temp['body'] as String).isNotEmpty)
+                                  Text(
+                                    temp['body'],
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[600],
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                              ],
+                            ),
                           ),
                         )
                         .toList();
@@ -1049,10 +1251,21 @@ class _ResultPdfScreenState extends State<ResultPdfScreen> {
     }
   }
 
+  Future<void> _sharePdf() async {
+    if (localPath == null) return;
+    await Share.shareXFiles([XFile(localPath!, mimeType: 'application/pdf')]);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("عرض النتيجة"), centerTitle: true),
+      appBar: AppBar(
+        title: const Text("عرض النتيجة"),
+        centerTitle: true,
+        actions: [
+          IconButton(icon: const Icon(Icons.share), onPressed: _sharePdf),
+        ],
+      ),
       body:
           isLoading
               ? const Center(child: CircularProgressIndicator())
